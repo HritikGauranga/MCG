@@ -1,0 +1,4 @@
+AlertType,Template
+TEMP_HIGH,🔥 ALERT: Temperature Critical! Current: {TEMP}°C (Limit: 50°C) - Action Required!
+SPEED_HIGH,⚡ ALERT: Speed Exceeds Limit! Current: {SPEED} RPM (Limit: 150 RPM) - Check System!
+PUMP_DURATION,⏱️ ALERT: Pump Running Long! Duration: {DURATION} seconds (1hr limit) - Verify Operation!
