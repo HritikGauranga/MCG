@@ -1,0 +1,77 @@
+
+This directory is intended for PlatformIO Test Runner and project tests.
+
+Unit Testing is a software testing method by which individual units of
+source code, sets of one or more MCU program modules together with associated
+control data, usage procedures, and operating procedures, are tested to
+determine whether they are fit for use. Unit testing finds problems early
+in the development cycle.
+
+More information about PlatformIO Unit Testing:
+- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:1184
+load:0x40078000,len:13232
+load:0x40080400,len:3028
+entry 0x400805e4
+
+=== WebMOD Async File Manager (Latching Switch AP Control) ===
+Latching switch on GPIO 33 ready (ON position = enable WebUI, OFF position = disable)
+LittleFS initialized. Web routes will be set up when AP mode is activated.
+WiFi disabled (will enable when AP button is activated)
+
+=== Initializing 4G Modem (EC200U) ===
+[MODEM] Performing power cycle (OFF→ON→OFF→ON)...
+[MODEM] Step 1: Power ON
+[MODEM] Power ON triggered
+[MODEM] Step 2: Power OFF
+[MODEM] Power OFF triggered
+[MODEM] Step 3: Power ON (Final)
+[MODEM] Power ON triggered
+[MODEM] Power cycle complete. Testing connection...
+[AT] >> AT
+[AT] << ␀���
+RDY
+
+POWERED DOWN
+␀
+[MODEM] Modem not responding
+
+=== Initializing RTU (Modbus) ===
+RTU Initialized!
+
+=== Initializing Ethernet (DHCP) ===
+Requesting DHCP...
+IP:      192.168.8.104
+Gateway: 192.168.8.1
+Subnet:  255.255.255.0
+Link:    1
+TCP + RTU Bridge Ready!
+
+=== System Initialize Complete ===
+
+
+=== Starting AP Mode ===
+Access Point Started!
+SSID: ESP32_FileServer
+IP: 192.168.4.1
+[WebServer] Routes configured
+WebUI available at: http://192.168.4.1
+[TCP] SetTemp -> 0
+[TCP] SetSpeed -> 0
+[RTU] SetTemp -> 0
+[RTU] SetSpeed -> 0
+
+=== Stopping AP Mode ===
+AP Mode disabled (switch to ON position to enable)
+
+=== Starting AP Mode ===
+Access Point Started!
+SSID: ESP32_FileServer
+IP: 192.168.4.1
+WebUI available at: http://192.168.4.1
