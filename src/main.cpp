@@ -50,13 +50,13 @@ void setup() {
   // Create sample CSV files (AP module)
   createSampleCSVFiles();
 
+  // Print loaded phone numbers to serial monitor
+  printPhoneNumbers();
+
   // Disable WiFi to avoid conflicts with Ethernet
   WiFi.mode(WIFI_OFF);
   delay(100);
   Serial.println("WiFi disabled (will enable when AP button is activated)");
-
-  // 4G Modem init
-  initModem();
 
   // RTU init
   delay(500);
@@ -67,7 +67,8 @@ void setup() {
   Serial.println("\n=== Initializing Ethernet (DHCP) ===");
   TCP_init();
 
-  Serial.println("\n=== System Initialize Complete ===\n");
+  Serial.println("\n=== System Initialize Complete ===");
+  Serial.println("Modem will be initialized on-demand when first alert is triggered\n");
 }
 
 void loop() {
@@ -92,6 +93,9 @@ void loop() {
   // Apply hardware changes and metrics
   applyHardware();
   updateSimulatedMetrics();
+
+  // Keep modem connection alive (before alerts to ensure modem is ready)
+  modemKeepAlive();
 
   // Check for alert conditions and send SMS
   checkAndSendAlerts();

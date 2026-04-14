@@ -17,9 +17,30 @@ void TCP_init() {
   Ethernet.init(5);
 
   Serial.println("Requesting DHCP...");
-  if (Ethernet.begin(mac) == 0) {
-    Serial.println("[DHCP] Failed — check router/cable");
-    delay(2000);
+  bool dhcpOk = (Ethernet.begin(mac) != 0);
+  if (!dhcpOk) {
+    Serial.println("[DHCP] Failed — attempting static IP fallback");
+
+    // Static fallback (tune these values to your network)
+    IPAddress staticIP(192,168,8,200);
+    IPAddress staticGateway(192,168,8,1);
+    IPAddress staticSubnet(255,255,255,0);
+    IPAddress staticDNS(8,8,8,8);
+
+    // Try to set static IP
+    Ethernet.begin(mac, staticIP);
+    delay(1000);
+
+    if (Ethernet.localIP() == (uint32_t)0) {
+      Serial.println("[TCP] Static IP assignment failed");
+    } else {
+      Serial.print("[TCP] Static IP set: ");
+      Serial.println(Ethernet.localIP());
+      // Optionally set gateway/subnet via Ethernet.config if available
+      #if defined(ETHERNET_HAVE_CONFIG)
+      Ethernet.config(staticIP, staticDNS, staticGateway, staticSubnet);
+      #endif
+    }
   }
 
   delay(1000);

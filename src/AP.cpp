@@ -28,10 +28,45 @@ void createSampleCSVFiles() {
     f.println("AlertType,Template");
     f.println("TEMP_HIGH, ALERT: Temperature Critical! Current: {TEMP}°C (Limit: 50°C) - Action Required!");
     f.println("SPEED_HIGH, ALERT: Speed Exceeds Limit! Current: {SPEED} RPM (Limit: 150 RPM) - Check System!");
+    f.println("PUMP_ON, PUMP STATUS: Pump turned ON - Monitor operation");
+    f.println("PUMP_OFF, PUMP STATUS: Pump turned OFF - Duration: {DURATION} seconds");
     f.println("PUMP_DURATION, ALERT: Pump Running Long! Duration: {DURATION} seconds (1hr limit) - Verify Operation!");
     f.close();
     Serial.println("[CSV] Created alert_messages.csv");
   }
+}
+
+void printPhoneNumbers() {
+  Serial.println("\n=== Active Phone Numbers ===");
+  File f = LittleFS.open("/phone_numbers.csv", "r");
+  if (!f) {
+    Serial.println("[ERROR] Could not open phone_numbers.csv");
+    return;
+  }
+
+  // Skip header
+  String header = f.readStringUntil('\n');
+  Serial.print("[Header] ");
+  Serial.println(header);
+
+  int count = 0;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    if (line.length() == 0) continue;
+
+    int comma1 = line.indexOf(',');
+    int comma2 = line.indexOf(',', comma1 + 1);
+
+    String number = line.substring(0, comma1);
+    int enabled = line.substring(comma1 + 1, comma2).toInt();
+    String name = line.substring(comma2 + 1);
+
+    count++;
+    Serial.printf("[%d] Number: %s | Enabled: %s | Name: %s\n", 
+                  count, number.c_str(), enabled ? "YES" : "NO", name.c_str());
+  }
+  f.close();
+  Serial.println("===========================\n");
 }
 void setupWebServerRoutes() {
   if (serverRoutesSetup) return;  // Already set up
@@ -39,98 +74,6 @@ void setupWebServerRoutes() {
   //  Dashboard
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send(200, "text/html", htmlPage());
-  });
-
-  //  List files
-  server.on("/api/files", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String json = "{\"files\":[";
-    File root = LittleFS.open("/");
-    File file = root.openNextFile();
-    bool first = true;
-
-    while (file) {
-      if (!first) json += ",";
-      json += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
-      first = false;
-      file = root.openNextFile();
-    }
-
-    json += "]}";
-    request->send(200, "application/json", json);
-  });
-
-  //  Upload
-  server.on(
-    "/api/upload",
-    HTTP_POST,
-    [](AsyncWebServerRequest *request) {
-      //  Do nothing here
-    },
-    [](AsyncWebServerRequest *request, String filename, size_t index,
-       uint8_t *data, size_t len, bool final) {
-
-      if (!index) {
-        Serial.printf("Upload Start: %s\n", filename.c_str());
-
-        if (filename.indexOf("..") != -1 || filename.indexOf("/") != -1) {
-          Serial.println("Invalid filename!");
-          return;
-        }
-
-        uploadFile = LittleFS.open("/" + filename, "w");
-
-        if (!uploadFile) {
-          Serial.println("File open failed!");
-          return;
-        }
-      }
-
-      if (len && uploadFile) {
-        uploadFile.write(data, len);
-      }
-
-      if (final) {
-        if (uploadFile) uploadFile.close();
-
-        Serial.printf("Upload Done: %s (%u bytes)\n",
-                      filename.c_str(), index + len);
-
-        //  Send response AFTER upload completes
-        request->send(200, "application/json", "{\"success\":true}");
-      }
-    });
-
-  //  Download
-  server.on("/api/download", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (!request->hasParam("filename")) {
-      request->send(400, "text/plain", "Missing filename");
-      return;
-    }
-
-    String filename = request->getParam("filename")->value();
-
-    if (!LittleFS.exists("/" + filename)) {
-      request->send(404, "text/plain", "File not found");
-      return;
-    }
-
-    request->send(LittleFS, "/" + filename, "application/octet-stream", true);
-  });
-
-  //  Delete
-  server.on("/api/delete", HTTP_DELETE, [](AsyncWebServerRequest *request) {
-    if (!request->hasParam("filename")) {
-      request->send(400, "application/json", "{\"error\":\"No filename\"}");
-      return;
-    }
-
-    String filename = request->getParam("filename")->value();
-
-    if (LittleFS.remove("/" + filename)) {
-      request->send(200, "application/json", "{\"success\":true}");
-    } else {
-      request->send(500, "application/json", "{\"error\":\"Delete failed\"}");
-    }
   });
 
   // CSV Phone Numbers Download
@@ -208,6 +151,8 @@ void setupWebServerRoutes() {
     bool first = true;
     while (f.available()) {
       String line = f.readStringUntil('\n');
+      // Remove carriage return if present
+      line.trim();
       if (line.length() == 0) continue;
 
       int comma1 = line.indexOf(',');
@@ -216,6 +161,10 @@ void setupWebServerRoutes() {
       String number = line.substring(0, comma1);
       int enabled = line.substring(comma1 + 1, comma2).toInt();
       String name = line.substring(comma2 + 1);
+
+      // Escape quotes in number and name for JSON
+      number.replace("\"", "\\\"");
+      name.replace("\"", "\\\"");
 
       if (!first) json += ",";
       json += "{\"number\":\"" + number + "\",\"enabled\":" + (enabled ? "true" : "false") + ",\"name\":\"" + name + "\"}";
@@ -269,6 +218,102 @@ void setupWebServerRoutes() {
     request->send(200, "application/json", "{\"success\":true}");
   });
 
+  // API: Edit phone number details
+  server.on("/api/edit-phone", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("oldNumber") || !request->hasParam("newNumber") || !request->hasParam("name")) {
+      request->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+      return;
+    }
+
+    String oldNumber = request->getParam("oldNumber")->value();
+    String newNumber = request->getParam("newNumber")->value();
+    String name = request->getParam("name")->value();
+
+    String csvContent = "";
+    File f = LittleFS.open("/phone_numbers.csv", "r");
+
+    // Read header
+    String header = f.readStringUntil('\n');
+    csvContent += header + "\n";
+
+    while (f.available()) {
+      String line = f.readStringUntil('\n');
+      if (line.length() == 0) continue;
+
+      int comma1 = line.indexOf(',');
+      String number = line.substring(0, comma1);
+
+      if (number == oldNumber) {
+        int comma2 = line.indexOf(',', comma1 + 1);
+        int enabled = line.substring(comma1 + 1, comma2).toInt();
+        
+        // Update with new number and name
+        csvContent += newNumber + "," + enabled + "," + name + "\n";
+      } else {
+        csvContent += line + "\n";
+      }
+    }
+    f.close();
+
+    File fw = LittleFS.open("/phone_numbers.csv", "w");
+    fw.print(csvContent); 
+    fw.close();
+
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
+  // API: Update phone number and name
+  server.on("/api/update-phone", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("oldNumber") || !request->hasParam("newNumber") || !request->hasParam("newName")) {
+      request->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+      return;
+    }
+
+    String oldNumber = request->getParam("oldNumber")->value();
+    String newNumber = request->getParam("newNumber")->value();
+    String newName = request->getParam("newName")->value();
+
+    String csvContent = "";
+    File f = LittleFS.open("/phone_numbers.csv", "r");
+
+    // Read header
+    String header = f.readStringUntil('\n');
+    csvContent += header + "\n";
+
+    bool found = false;
+    while (f.available()) {
+      String line = f.readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) continue;
+
+      int comma1 = line.indexOf(',');
+      String currentNumber = line.substring(0, comma1);
+
+      if (currentNumber == oldNumber) {
+        int comma2 = line.indexOf(',', comma1 + 1);
+        int enabled = line.substring(comma1 + 1, comma2).toInt();
+        
+        // Update with new number and name
+        csvContent += newNumber + "," + enabled + "," + newName + "\n";
+        found = true;
+      } else {
+        csvContent += line + "\n";
+      }
+    }
+    f.close();
+
+    if (!found) {
+      request->send(404, "application/json", "{\"error\":\"Phone number not found\"}");
+      return;
+    }
+
+    File fw = LittleFS.open("/phone_numbers.csv", "w");
+    fw.print(csvContent);
+    fw.close();
+
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
   serverRoutesSetup = true;
   Serial.println("[WebServer] Routes configured");
 }
@@ -311,7 +356,7 @@ void stopAPMode() {
   Serial.println("AP Mode disabled (switch to ON position to enable)");
 }
 
-// HTML page (copied from original main - kept as a single raw string)
+// HTML page - SMS Alert Management UI only
 String htmlPage() {
   return R"rawliteral(
 <!DOCTYPE html>
@@ -319,7 +364,7 @@ String htmlPage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ESP32 File Manager</title>
+<title>ESP32 SMS Alert Manager</title>
 <style>
 * {
   margin: 0;
@@ -751,65 +796,62 @@ body {
 
 <div class="container">
   <div class="header">
-    <h1>📁 ESP32 File Manager</h1>
-    <p>Organize and manage files on your ESP32</p>
+    <h1>� SMS Alert Manager</h1>
+    <p>Manage phone numbers and alert templates</p>
   </div>
 
   <div class="content">
     <div class="status-message" id="statusMsg"></div>
 
-    <div class="upload-section">
-      <label for="file" class="upload-label">📤 Choose File</label>
-      <button class="upload-btn" onclick="uploadFile()">Upload</button>
-      <div class="file-name" id="fileName"></div>
+    <div class="files-section">
+      <h2>📋 Phone Numbers CSV</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:15px;">Download the default phone list, edit with your numbers, and upload back.</p>
+      <button class="btn-action btn-download" onclick="downloadPhoneCSV()" style="width:100%; margin-bottom:8px;">⬇️ Download phone_numbers.csv</button>
+      <button class="btn-action btn-download" onclick="uploadPhoneCSVPrompt()" style="width:100%;">📤 Upload phone_numbers.csv</button>
     </div>
 
     <div class="files-section">
-      <h2>📋 Recent Files</h2>
-      <ul class="file-list" id="list">
-        <div class="empty-state">
-          <div class="empty-state-icon">📭</div>
-          <p>No files yet. Upload one to get started!</p>
-        </div>
+      <h2>🔔 Alert Messages CSV</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:15px;">Download alert templates, customize messages, and upload back.</p>
+      <button class="btn-action btn-download" onclick="downloadAlertCSV()" style="width:100%; margin-bottom:8px;">⬇️ Download alert_messages.csv</button>
+      <button class="btn-action btn-download" onclick="uploadAlertCSVPrompt()" style="width:100%;">📤 Upload alert_messages.csv</button>
+    </div>
+
+    <div class="files-section">
+      <h2>✅ Active Phone Numbers</h2>
+      <p style="font-size:13px; color:#666; margin-bottom:15px;">Toggle which phone numbers receive alerts, or click Edit to modify details.</p>
+      <ul class="file-list" id="phoneList" style="margin-top:10px;">
+        <div class="empty-state" style="padding:15px;">Loading...</div>
       </ul>
     </div>
 
-    <div class="files-section">
-      <h2>📱 SMS Alert Management</h2>
-      <div style="margin-bottom: 15px;">
-        <strong>Phone Numbers CSV:</strong><br/>
-        <button class="btn-action btn-download" onclick="downloadPhoneCSV()" style="margin-top:5px;">⬇️ Download phone_numbers.csv</button>
-        <button class="btn-action btn-download" onclick="uploadPhoneCSVPrompt()" style="margin-top:5px;">📤 Upload phone_numbers.csv</button>
-      </div>
-      <div style="margin-bottom: 15px;">
-        <strong>Alert Messages CSV:</strong><br/>
-        <button class="btn-action btn-download" onclick="downloadAlertCSV()" style="margin-top:5px;">⬇️ Download alert_messages.csv</button>
-        <button class="btn-action btn-download" onclick="uploadAlertCSVPrompt()" style="margin-top:5px;">📤 Upload alert_messages.csv</button>
-      </div>
-      <div>
-        <strong>Active Phone Numbers:</strong>
-        <ul class="file-list" id="phoneList" style="margin-top:10px;">
-          <div class="empty-state" style="padding:15px;">Loading...</div>
-        </ul>
+    <!-- Edit Modal -->
+    <div id="editModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+      <div style="background:white; padding:30px; border-radius:8px; box-shadow:0 5px 20px rgba(0,0,0,0.3); max-width:400px; width:90%;">
+        <h3 style="margin-bottom:20px; color:#333;">Edit Phone Number</h3>
+        <div style="margin-bottom:15px;">
+          <label style="display:block; font-weight:600; margin-bottom:5px; color:#666;">Phone Number</label>
+          <input type="text" id="editPhoneNumber" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:14px; box-sizing:border-box;">
+        </div>
+        <div style="margin-bottom:15px;">
+          <label style="display:block; font-weight:600; margin-bottom:5px; color:#666;">Name/Label</label>
+          <input type="text" id="editPhoneName" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:14px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; gap:10px; margin-top:20px;">
+          <button onclick="closeEditModal()" style="flex:1; padding:10px; background:#ccc; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Cancel</button>
+          <button onclick="saveEditPhone()" style="flex:1; padding:10px; background:#28a745; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Save</button>
+        </div>
       </div>
     </div>
 
-    <input type="file" id="file" onchange="updateFileName()" style="display:none;">
     <input type="file" id="csvFile" onchange="uploadCSVFile()" style="display:none;" accept=".csv">
   </div>
 </div>
 
 <script>
 
-function updateFileName() {
-  const file = document.getElementById("file").files[0];
-  const fileNameEl = document.getElementById("fileName");
-  if (file) {
-    fileNameEl.textContent = "Selected: " + file.name;
-  } else {
-    fileNameEl.textContent = "";
-  }
-}
+// Modal state
+let editingPhoneNumber = null;
 
 function showStatus(msg, type) {
   const statusEl = document.getElementById("statusMsg");
@@ -820,91 +862,43 @@ function showStatus(msg, type) {
   }, 3000);
 }
 
-function uploadFile() {
-  let file = document.getElementById("file").files[0];
-  
-  if (!file) {
-    showStatus("Please select a file first", "error");
+function openEditModal(number, name) {
+  editingPhoneNumber = number;
+  document.getElementById("editPhoneNumber").value = number;
+  document.getElementById("editPhoneName").value = name;
+  document.getElementById("editModal").style.display = "flex";
+}
+
+function closeEditModal() {
+  document.getElementById("editModal").style.display = "none";
+  editingPhoneNumber = null;
+}
+
+function saveEditPhone() {
+  const newNumber = document.getElementById("editPhoneNumber").value.trim();
+  const newName = document.getElementById("editPhoneName").value.trim();
+
+  if (!newNumber || !newName) {
+    showStatus("Phone number and name are required", "error");
     return;
   }
 
-  let formData = new FormData();
-  formData.append("file", file);
-
-  const btn = event.target;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="loading"></span> Uploading...';
-
-  fetch("/api/upload", {
+  fetch("/api/edit-phone", {
     method: "POST",
-    body: formData
+    headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: "oldNumber=" + encodeURIComponent(editingPhoneNumber) + 
+          "&newNumber=" + encodeURIComponent(newNumber) + 
+          "&name=" + encodeURIComponent(newName)
   })
   .then(r => r.json())
   .then(data => {
-    showStatus("File uploaded successfully!", "success");
-    document.getElementById("file").value = "";
-    document.getElementById("fileName").textContent = "";
-    load();
+    showStatus("Phone number updated!", "success");
+    closeEditModal();
+    loadPhoneNumbers();
   })
   .catch(e => {
-    showStatus("Upload failed: " + e.message, "error");
-  })
-  .finally(() => {
-    btn.disabled = false;
-    btn.innerHTML = "Upload";
+    showStatus("Update failed: " + e.message, "error");
   });
-}
-
-function load() {
-  fetch("/api/files")
-  .then(r => r.json())
-  .then(data => {
-    let html = "";
-    
-    if (data.files.length === 0) {
-      html = `<div class="empty-state">
-        <div class="empty-state-icon">📭</div>
-        <p>No files yet. Upload one to get started!</p>
-      </div>`;
-    } else {
-      data.files.forEach(f => {
-        const sizeKB = (f.size / 1024).toFixed(2);
-        html += `<li class="file-item">
-          <div class="file-info">
-            <div class="file-name-text">📄 ${f.name}</div>
-            <div class="file-size">${sizeKB} KB</div>
-          </div>
-          <div class="file-actions">
-            <button class="btn-action btn-download" onclick="download('${f.name.replace(/'/g, "\\'")}')">⬇️ Download</button>
-            <button class="btn-action btn-delete" onclick="del('${f.name.replace(/'/g, "\\'")}')">🗑️ Delete</button>
-          </div>
-        </li>`;
-      });
-    }
-    
-    document.getElementById("list").innerHTML = html;
-  })
-  .catch(e => {
-    showStatus("Failed to load files: " + e.message, "error");
-  });
-}
-
-function download(name) {
-  window.open("/api/download?filename=" + encodeURIComponent(name));
-}
-
-function del(name) {
-  if (confirm("Are you sure you want to delete '" + name + "'?")) {
-    fetch("/api/delete?filename=" + encodeURIComponent(name), {method: "DELETE"})
-    .then(r => r.json())
-    .then(data => {
-      showStatus("File deleted successfully!", "success");
-      load();
-    })
-    .catch(e => {
-      showStatus("Delete failed: " + e.message, "error");
-    });
-  }
 }
 
 // ================= SMS MANAGEMENT FUNCTIONS =================
@@ -965,10 +959,11 @@ function loadPhoneNumbers() {
             <div class="file-name-text">📞 ${item.number}</div>
             <div class="file-size">${item.name}</div>
           </div>
-          <div class="file-actions">
+          <div class="file-actions" style="gap:6px;">
+            <button class="btn-action btn-download" onclick="openEditModal('${item.number.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}')" style="flex:1;">✏️ Edit</button>
             <button class="btn-action ${item.enabled ? 'btn-download' : 'btn-delete'}" 
                     onclick="togglePhoneAlert('${item.number}')" 
-                    style="width:100%;">
+                    style="flex:1;">
               ${item.enabled ? '✅ Enabled' : '❌ Disabled'}
             </button>
           </div>
@@ -996,8 +991,56 @@ function togglePhoneAlert(number) {
   });
 }
 
-// Load files on page load
-load();
+// Close modal when clicking outside
+document.addEventListener("click", function(event) {
+  const modal = document.getElementById("editModal");
+  if (event.target === modal) {
+    closeEditModal();
+  }
+});
+
+function openEditModal(number, name) {
+  document.getElementById("editPhoneNumber").value = number;
+  document.getElementById("editPhoneNumber").dataset.oldNumber = number;
+  document.getElementById("editPhoneName").value = name;
+  document.getElementById("editModal").style.display = "flex";
+}
+
+function closeEditModal() {
+  document.getElementById("editModal").style.display = "none";
+}
+
+function savePhoneEdit() {
+  const oldNumber = document.getElementById("editPhoneNumber").dataset.oldNumber;
+  const newNumber = document.getElementById("editPhoneNumber").value.trim();
+  const newName = document.getElementById("editPhoneName").value.trim();
+
+  if (!newNumber) {
+    showStatus("Phone number cannot be empty", "error");
+    return;
+  }
+
+  fetch("/api/update-phone", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "oldNumber=" + encodeURIComponent(oldNumber) + "&newNumber=" + encodeURIComponent(newNumber) + "&newName=" + encodeURIComponent(newName)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      showStatus("Phone number updated successfully!", "success");
+      closeEditModal();
+      loadPhoneNumbers();
+    } else {
+      showStatus("Error: " + (data.error || "Unknown error"), "error");
+    }
+  })
+  .catch(e => {
+    showStatus("Update failed: " + e.message, "error");
+  });
+}
+
+// Load phone numbers on page load
 loadPhoneNumbers();
 
 </script>
