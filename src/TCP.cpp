@@ -27,8 +27,16 @@ void TCP_init() {
 
   Serial.println("Requesting DHCP...");
   bool dhcpOk = (Ethernet.begin(mac) != 0);
-  if (!dhcpOk) {
-    Serial.println("[DHCP] Failed — attempting static IP fallback");
+  
+  // Check if DHCP succeeded AND got valid gateway
+  if (dhcpOk && Ethernet.gatewayIP() != IPAddress(0,0,0,0)) {
+    Serial.println("[DHCP] ✓ DHCP successful with valid gateway");
+  } else {
+    if (!dhcpOk) {
+      Serial.println("[DHCP] Failed — attempting static IP fallback");
+    } else {
+      Serial.println("[DHCP] Incomplete (no gateway) — attempting static IP fallback");
+    }
 
     // Static fallback (tune these values to your network)
     IPAddress staticIP(192,168,8,200);
@@ -40,7 +48,7 @@ void TCP_init() {
     Ethernet.begin(mac, staticIP);
     delay(1000);
 
-    if (Ethernet.localIP() == (uint32_t)0) {
+    if (Ethernet.localIP() == IPAddress(0,0,0,0)) {
       Serial.println("[TCP] Static IP assignment failed");
     } else {
       Serial.print("[TCP] Static IP set: ");
