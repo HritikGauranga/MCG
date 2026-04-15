@@ -372,6 +372,12 @@ void checkAndSendAlerts() {
       Serial.printf("[ALERT] Pump duration threshold exceeded! Duration: %lu sec (Limit: %lu sec)\n", duration, PUMP_TIME_ALERT / 1000);
       
       if (now - lastPumpAlert > ALERT_COOLDOWN) {
+        // Initialize modem only when we need to send SMS
+        if (!modemReady) {
+          Serial.println("[ALERT] Initializing modem for pump duration alert...");
+          initModem();
+        }
+        
         Serial.println("[ALERT] Sending pump duration alerts...");
         File f = LittleFS.open("/phone_numbers.csv", "r");
         f.readStringUntil('\n');  // skip header
@@ -404,26 +410,6 @@ void checkAndSendAlerts() {
           Serial.println("[ALERT] WARNING: No enabled phone numbers found");
         }
       }
-    }
-  }
-}
-
-// Keepalive - ping modem every 5 seconds to prevent timeout
-void modemKeepAlive() {
-  unsigned long now = millis();
-  
-  // Ping every 5 seconds if modem is ready
-  if (modemReady && (now - lastModemKeepAlive) > MODEM_KEEPALIVE_INTERVAL) {
-    String res = sendAT("AT", 1000);
-    if (res.indexOf("OK") != -1) {
-      // Connection alive, update timestamp
-      lastModemKeepAlive = now;
-    } else {
-      // Modem lost - reinitialize
-      Serial.println("[MODEM] Connection lost during keepalive - reinitializing...");
-      modemReady = false;
-      initModem();
-      lastModemKeepAlive = now;
     }
   }
 }

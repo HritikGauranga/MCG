@@ -11,7 +11,16 @@ static EthernetClient activeClient;
 static bool clientActive = false;
 
 void TCP_init() {
-  Serial.println("\n=== Initializing Ethernet (DHCP) ===");
+  Serial.println("\n=== Initializing Ethernet (W5500) ===");
+
+  // Reset W5500 first
+  const int W5500_RST = 14;
+  pinMode(W5500_RST, OUTPUT);
+  digitalWrite(W5500_RST, LOW);
+  delay(100);
+  digitalWrite(W5500_RST, HIGH);
+  delay(200);  // Wait for device to stabilize
+  Serial.println("[TCP] W5500 reset complete");
 
   SPI.begin(18, 19, 23, 5);
   Ethernet.init(5);

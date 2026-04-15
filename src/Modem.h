@@ -9,4 +9,3 @@ bool waitForNetwork();
 void sendSMS(String number, String message);
 String getAlertMessage(String alertType);
 void checkAndSendAlerts();
-void modemKeepAlive();  // Keep modem connection alive

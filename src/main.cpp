@@ -94,9 +94,6 @@ void loop() {
   applyHardware();
   updateSimulatedMetrics();
 
-  // Keep modem connection alive (before alerts to ensure modem is ready)
-  modemKeepAlive();
-
   // Check for alert conditions and send SMS
   checkAndSendAlerts();
 
