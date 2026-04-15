@@ -2,9 +2,51 @@
 #include "Shared.h"
 #include <HardwareSerial.h>
 #include <LittleFS.h>
+#include <freertos/queue.h>
 
-HardwareSerial SerialAT(2);
+// Keep the modem on a dedicated UART so RTU on Serial2 can run concurrently.
+HardwareSerial SerialAT(1);
 bool modemReady = false;
+static QueueHandle_t alertQueue = nullptr;
+
+static bool enqueueAlert(AlertType type, uint32_t value) {
+  if (alertQueue == nullptr) {
+    return false;
+  }
+
+  AlertEvent event = {type, value};
+  if (xQueueSend(alertQueue, &event, 0) != pdTRUE) {
+    Serial.println("[ALERT] Queue full, dropping event");
+    return false;
+  }
+
+  return true;
+}
+
+static String readSerialATResponse(unsigned long timeout) {
+  String response = "";
+  unsigned long start = millis();
+  unsigned long lastByteAt = start;
+
+  while (millis() - start < timeout) {
+    while (SerialAT.available()) {
+      response += (char)SerialAT.read();
+      lastByteAt = millis();
+      delay(2);
+    }
+
+    // Once bytes have started arriving, give the modem a short quiet window
+    // so we capture the full trailing OK / ERROR / +CMGS response.
+    if (response.length() > 0 && (millis() - lastByteAt) > 250) {
+      break;
+    }
+
+    delay(10);
+  }
+
+  response.trim();
+  return response;
+}
 
 void modemPowerOn() {
   pinMode(MODEM_PWRKEY, OUTPUT);
@@ -12,37 +54,26 @@ void modemPowerOn() {
   delay(1000);
   digitalWrite(MODEM_PWRKEY, HIGH);
   Serial.println("[MODEM] Power ON triggered");
-  delay(8000);  // wait for boot
+  delay(8000);
 }
 
 String sendAT(String cmd, int timeout) {
-  // Clear input buffer first
   while (SerialAT.available()) {
     SerialAT.read();
   }
-  
-  String response = "";
+
   Serial.println("[AT] >> " + cmd);
   SerialAT.println(cmd);
-  delay(100);  // Give modem time to start responding
-  
-  long start = millis();
-  while (millis() - start < timeout) {
-    while (SerialAT.available()) {
-      char c = SerialAT.read();
-      response += c;
-      delay(5);  // Let more bytes arrive
-    }
-  }
-  
-  // Trim whitespace
-  response.trim();
-  
+  delay(100);
+
+  String response = readSerialATResponse((unsigned long)timeout);
+
   if (response.length() == 0) {
     Serial.println("[AT] << [NO RESPONSE]");
   } else {
     Serial.println("[AT] << " + response);
   }
+
   return response;
 }
 
@@ -53,9 +84,11 @@ bool waitForNetwork() {
       Serial.println("[MODEM] Network Registered");
       return true;
     }
+
     Serial.println("[MODEM] Waiting for network...");
     delay(2000);
   }
+
   Serial.println("[MODEM] Network FAILED");
   return false;
 }
@@ -83,8 +116,6 @@ void sendSMS(String number, String message) {
   sendAT("AT+CSMP=17,167,0,0", 2000);
   sendAT("AT+CMGF=1", 2000);
 
-  Serial.printf("[SMS] Sending message to %s: %s\n", number.c_str(), message.c_str());
-
   SerialAT.print("AT+CMGS=\"");
   SerialAT.print(number);
   SerialAT.println("\"");
@@ -92,24 +123,20 @@ void sendSMS(String number, String message) {
   delay(1000);
   SerialAT.print(message);
   delay(500);
-  SerialAT.write(26);  // CTRL+Z
+  SerialAT.write(26);
   Serial.println("[SMS] CTRL+Z sent");
 
-  Serial.println("[SMS] Waiting for +CMGS response...");
-  delay(5000);
-
-  String res = "";
-  while (SerialAT.available()) {
-    res += (char)SerialAT.read();
-    delay(5);
-  }
+  Serial.println("[SMS] Waiting for modem send result...");
+  String res = readSerialATResponse(15000);
 
   Serial.printf("[SMS] Modem response: %s\n", res.c_str());
 
-  if (res.indexOf("+CMGS:") != -1) {
-    Serial.println("[SMS] ✓ Sent successfully!");
+  if (res.indexOf("+CMGS:") != -1 && res.indexOf("ERROR") == -1) {
+    Serial.println("[SMS] Sent successfully");
+  } else if (res.length() == 0) {
+    Serial.println("[SMS] Send status unknown - no final modem response");
   } else {
-    Serial.println("[SMS] ✗ Send failed - no +CMGS response");
+    Serial.println("[SMS] Send status uncertain - modem did not return a clean +CMGS confirmation");
   }
 }
 
@@ -118,12 +145,9 @@ void initModem() {
   delay(500);
 
   Serial.println("\n=== Initializing 4G Modem (EC200U) ===");
-  
-  // Power ON
   Serial.println("[MODEM] Powering ON...");
   modemPowerOn();
-  
-  // Test AT connection
+
   Serial.println("[MODEM] Testing AT connection...");
   String res = sendAT("AT", 2000);
   if (res.indexOf("OK") == -1) {
@@ -131,285 +155,227 @@ void initModem() {
     delay(3000);
     res = sendAT("AT", 2000);
   }
-  
+
   if (res.indexOf("OK") != -1) {
-    Serial.println("[MODEM] ✓ AT connection OK");
-    
-    // Configure modem
-    sendAT("AT+CMEE=2", 2000);      // Error reporting enabled
-    sendAT("AT+CPIN?", 2000);       // Check SIM
-    sendAT("AT+CSQ", 2000);         // Signal quality
-    
-    // Wait for network
+    Serial.println("[MODEM] AT connection OK");
+    sendAT("AT+CMEE=2", 2000);
+    sendAT("AT+CPIN?", 2000);
+    sendAT("AT+CSQ", 2000);
+
     if (waitForNetwork()) {
-      Serial.println("[MODEM] ✓ Modem initialized successfully!");
+      Serial.println("[MODEM] Modem initialized successfully");
       modemReady = true;
     } else {
       Serial.println("[MODEM] Network registration failed");
       modemReady = false;
     }
   } else {
-    Serial.println("[MODEM] ✗ No modem response after power ON");
+    Serial.println("[MODEM] No modem response after power ON");
     modemReady = false;
   }
 }
 
 String getAlertMessage(String alertType) {
+  if (!Shared_lockFileSystem()) {
+    return "Alert: " + alertType;
+  }
+
   File f = LittleFS.open("/alert_messages.csv", "r");
-  if (!f) return "Alert: " + alertType;
+  if (!f) {
+    Shared_unlockFileSystem();
+    return "Alert: " + alertType;
+  }
 
   while (f.available()) {
     String line = f.readStringUntil('\n');
     if (line.indexOf(alertType) != -1) {
       int commaIdx = line.indexOf(',');
       if (commaIdx != -1) {
+        String message = line.substring(commaIdx + 1);
         f.close();
-        return line.substring(commaIdx + 1);
+        Shared_unlockFileSystem();
+        return message;
       }
     }
   }
+
   f.close();
+  Shared_unlockFileSystem();
   return "Alert: " + alertType;
 }
 
-void checkAndSendAlerts() {
+static bool sendAlertToEnabledNumbers(const String& alertKey, const String& placeholder, uint32_t value) {
+  String msgTemplate = getAlertMessage(alertKey);
+
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
+    Serial.println("[ALERT] File system busy, alert skipped");
+    return false;
+  }
+
+  File f = LittleFS.open("/phone_numbers.csv", "r");
+  if (!f) {
+    Shared_unlockFileSystem();
+    Serial.println("[ALERT] Unable to open phone number list");
+    return false;
+  }
+
+  f.readStringUntil('\n');
+
+  bool alerted = false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {
+      continue;
+    }
+
+    int comma1 = line.indexOf(',');
+    int comma2 = line.indexOf(',', comma1 + 1);
+    if (comma1 == -1 || comma2 == -1) {
+      continue;
+    }
+
+    String number = line.substring(0, comma1);
+    int enabled = line.substring(comma1 + 1, comma2).toInt();
+    if (!enabled) {
+      continue;
+    }
+
+    String msg = msgTemplate;
+    if (placeholder.length() > 0) {
+      msg.replace(placeholder, String(value));
+    }
+
+    Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
+    sendSMS(number, msg);
+    alerted = true;
+  }
+
+  f.close();
+  Shared_unlockFileSystem();
+
+  if (!alerted) {
+    Serial.println("[ALERT] WARNING: No enabled phone numbers found");
+  }
+
+  return alerted;
+}
+
+bool Alerts_init(size_t queueLength) {
+  if (alertQueue == nullptr) {
+    alertQueue = xQueueCreate(queueLength, sizeof(AlertEvent));
+  }
+
+  return alertQueue != nullptr;
+}
+
+void checkAndQueueAlerts() {
+  static bool pumpStateSeen = false;
+  static unsigned long localPumpOnStart = 0;
+  static unsigned long localLastTempAlert = 0;
+  static unsigned long localLastSpeedAlert = 0;
+  static unsigned long localLastPumpAlert = 0;
+  static unsigned long localLastPumpOnAlert = 0;
+  static unsigned long localLastPumpOffAlert = 0;
+
+  SystemState snapshot = Shared_getSnapshot();
   unsigned long now = millis();
 
-  // Temperature Alert
-  if (actualTemp > TEMP_ALERT_THRESHOLD) {
-    Serial.printf("[ALERT] Temperature threshold exceeded! Current: %d°C (Limit: %d°C)\n", actualTemp, TEMP_ALERT_THRESHOLD);
-    
-
-    if (now - lastTempAlert > ALERT_COOLDOWN) {
-      // Initialize modem only when we need to send SMS
-      if (!modemReady) {
-        Serial.println("[ALERT] Initializing modem for temperature alert...");
-        initModem();
-      }
-      
-      Serial.println("[ALERT] Sending temperature alerts...");
-      File f = LittleFS.open("/phone_numbers.csv", "r");
-      f.readStringUntil('\n');  // skip header
-
-      bool alerted = false;
-      while (f.available()) {
-        String line = f.readStringUntil('\n');
-        if (line.length() == 0) continue;
-
-        int comma1 = line.indexOf(',');
-        int comma2 = line.indexOf(',', comma1 + 1);
-
-        String number = line.substring(0, comma1);
-        int enabled = line.substring(comma1 + 1, comma2).toInt();
-
-        if (enabled) {
-          Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
-          String msg = getAlertMessage("TEMP_HIGH");
-          msg.replace("{TEMP}", String(actualTemp));
-          sendSMS(number, msg);
-          alerted = true;
-          Serial.printf("[ALERT] ✓ ACK: Temperature alert sent to %s\n", number.c_str());
-        }
-      }
-      f.close();
+  if (snapshot.actualTemp > TEMP_ALERT_THRESHOLD) {
+    if (now - localLastTempAlert > ALERT_COOLDOWN && enqueueAlert(ALERT_TEMP_HIGH, snapshot.actualTemp)) {
+      localLastTempAlert = now;
       lastTempAlert = now;
-      if (alerted) {
-        Serial.println("[ALERT] ✓ All temperature alerts completed");
-      } else {
-        Serial.println("[ALERT] WARNING: No enabled phone numbers found");
-      }
-    } else {
-      Serial.println("[ALERT] Temperature cooldown active - skipping");
+      Serial.printf("[ALERT] Temperature event queued: %u\n", snapshot.actualTemp);
     }
-    return;
   }
 
-  // Speed Alert
-  if (setSpeed > SPEED_ALERT_THRESHOLD) {
-    Serial.printf("[ALERT] Speed threshold exceeded! Current: %d RPM (Limit: %d RPM)\n", setSpeed, SPEED_ALERT_THRESHOLD);
-    
-    if (lastSpeedAlert == 0 || (now - lastSpeedAlert) > ALERT_COOLDOWN) {
-      // Initialize modem only when we need to send SMS
-      if (!modemReady) {
-        Serial.println("[ALERT] Initializing modem for speed alert...");
-        initModem();
-      }
-      
-      Serial.println("[ALERT] Sending speed alerts...");
-      File f = LittleFS.open("/phone_numbers.csv", "r");
-      f.readStringUntil('\n');  // skip header
-
-      bool alerted = false;
-      while (f.available()) {
-        String line = f.readStringUntil('\n');
-        if (line.length() == 0) continue;
-
-        int comma1 = line.indexOf(',');
-        int comma2 = line.indexOf(',', comma1 + 1);
-
-        String number = line.substring(0, comma1);
-        int enabled = line.substring(comma1 + 1, comma2).toInt();
-
-        if (enabled) {
-          Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
-          String msg = getAlertMessage("SPEED_HIGH");
-          msg.replace("{SPEED}", String(setSpeed));
-          sendSMS(number, msg);
-          alerted = true;
-          Serial.printf("[ALERT] ✓ ACK: Speed alert sent to %s\n", number.c_str());
-        }
-      }
-      f.close();
+  if (snapshot.setSpeed > SPEED_ALERT_THRESHOLD) {
+    if ((localLastSpeedAlert == 0 || now - localLastSpeedAlert > ALERT_COOLDOWN) &&
+        enqueueAlert(ALERT_SPEED_HIGH, snapshot.setSpeed)) {
+      localLastSpeedAlert = now;
       lastSpeedAlert = now;
-      if (alerted) {
-        Serial.println("[ALERT] ✓ All speed alerts completed");
-      } else {
-        Serial.println("[ALERT] WARNING: No enabled phone numbers found");
-      }
-    } else {
-      Serial.println("[ALERT] Speed cooldown active - skipping");
+      Serial.printf("[ALERT] Speed event queued: %u\n", snapshot.setSpeed);
     }
-    return;
   }
 
-  // Pump State Tracking
-  if (coilPump && !pumpWasOn) {
-    // Pump just turned ON
+  if (snapshot.coilPump && !pumpStateSeen) {
+    localPumpOnStart = now;
+    pumpStateSeen = true;
     pumpOnStart = now;
     pumpWasOn = true;
-    Serial.println("[ALERT] Pump turned ON - sending alert...");
-    
-    if (lastPumpOnAlert == 0 || (now - lastPumpOnAlert) > ALERT_COOLDOWN) {
-      // Initialize modem only when we need to send SMS
-      if (!modemReady) {
-        Serial.println("[ALERT] Initializing modem for pump ON alert...");
-        initModem();
-      }
-      
-      Serial.println("[ALERT] Sending pump ON alerts...");
-      File f = LittleFS.open("/phone_numbers.csv", "r");
-      f.readStringUntil('\n');  // skip header
 
-      bool alerted = false;
-      while (f.available()) {
-        String line = f.readStringUntil('\n');
-        if (line.length() == 0) continue;
-
-        int comma1 = line.indexOf(',');
-        int comma2 = line.indexOf(',', comma1 + 1);
-
-        String number = line.substring(0, comma1);
-        int enabled = line.substring(comma1 + 1, comma2).toInt();
-
-        if (enabled) {
-          Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
-          String msg = getAlertMessage("PUMP_ON");
-          sendSMS(number, msg);
-          alerted = true;
-          Serial.printf("[ALERT] ✓ ACK: Pump ON alert sent to %s\n", number.c_str());
-        }
-      }
-      f.close();
+    if ((localLastPumpOnAlert == 0 || now - localLastPumpOnAlert > ALERT_COOLDOWN) &&
+        enqueueAlert(ALERT_PUMP_ON, 0)) {
+      localLastPumpOnAlert = now;
       lastPumpOnAlert = now;
-      if (alerted) {
-        Serial.println("[ALERT] ✓ All pump ON alerts completed");
-      } else {
-        Serial.println("[ALERT] WARNING: No enabled phone numbers found");
-      }
-    } else {
-      Serial.println("[ALERT] Pump ON cooldown active - skipping");
+      Serial.println("[ALERT] Pump ON event queued");
     }
-  } else if (!coilPump && pumpWasOn) {
-    // Pump just turned OFF
-    unsigned long duration = (now - pumpOnStart) / 1000;
+  } else if (!snapshot.coilPump && pumpStateSeen) {
+    unsigned long duration = (now - localPumpOnStart) / 1000;
+    pumpStateSeen = false;
     pumpWasOn = false;
-    Serial.printf("[ALERT] Pump turned OFF (duration: %lu sec) - sending alert...\n", duration);
 
-    if (lastPumpOffAlert == 0 || (now - lastPumpOffAlert) > ALERT_COOLDOWN) {
-      // Initialize modem only when we need to send SMS
-      if (!modemReady) {
-        Serial.println("[ALERT] Initializing modem for pump OFF alert...");
-        initModem();
-      }
-      
-      Serial.println("[ALERT] Sending pump OFF alerts...");
-      File f = LittleFS.open("/phone_numbers.csv", "r");
-      f.readStringUntil('\n');  // skip header
-
-      bool alerted = false;
-      while (f.available()) {
-        String line = f.readStringUntil('\n');
-        if (line.length() == 0) continue;
-
-        int comma1 = line.indexOf(',');
-        int comma2 = line.indexOf(',', comma1 + 1);
-
-        String number = line.substring(0, comma1);
-        int enabled = line.substring(comma1 + 1, comma2).toInt();
-
-        if (enabled) {
-          Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
-          String msg = getAlertMessage("PUMP_OFF");
-          msg.replace("{DURATION}", String(duration));
-          sendSMS(number, msg);
-          alerted = true;
-          Serial.printf("[ALERT] ✓ ACK: Pump OFF alert sent to %s\n", number.c_str());
-        }
-      }
-      f.close();
+    if ((localLastPumpOffAlert == 0 || now - localLastPumpOffAlert > ALERT_COOLDOWN) &&
+        enqueueAlert(ALERT_PUMP_OFF, duration)) {
+      localLastPumpOffAlert = now;
       lastPumpOffAlert = now;
-      if (alerted) {
-        Serial.println("[ALERT] ✓ All pump OFF alerts completed");
-      } else {
-        Serial.println("[ALERT] WARNING: No enabled phone numbers found");
-      }
-    } else {
-      Serial.println("[ALERT] Pump OFF cooldown active - skipping");
+      Serial.printf("[ALERT] Pump OFF event queued: %lu sec\n", duration);
     }
 
-    // Check if pump ran too long
-    if (duration > (PUMP_TIME_ALERT / 1000)) {
-      Serial.printf("[ALERT] Pump duration threshold exceeded! Duration: %lu sec (Limit: %lu sec)\n", duration, PUMP_TIME_ALERT / 1000);
-      
-      if (now - lastPumpAlert > ALERT_COOLDOWN) {
-        // Initialize modem only when we need to send SMS
-        if (!modemReady) {
-          Serial.println("[ALERT] Initializing modem for pump duration alert...");
-          initModem();
-        }
-        
-        Serial.println("[ALERT] Sending pump duration alerts...");
-        File f = LittleFS.open("/phone_numbers.csv", "r");
-        f.readStringUntil('\n');  // skip header
+    if (duration > (PUMP_TIME_ALERT / 1000) &&
+        (localLastPumpAlert == 0 || now - localLastPumpAlert > ALERT_COOLDOWN) &&
+        enqueueAlert(ALERT_PUMP_DURATION, duration)) {
+      localLastPumpAlert = now;
+      lastPumpAlert = now;
+      Serial.printf("[ALERT] Pump duration event queued: %lu sec\n", duration);
+    }
+  }
+}
 
-        bool alerted = false;
-        while (f.available()) {
-          String line = f.readStringUntil('\n');
-          if (line.length() == 0) continue;
+void Alerts_task(void *pvParameters) {
+  (void)pvParameters;
+  AlertEvent event;
 
-          int comma1 = line.indexOf(',');
-          int comma2 = line.indexOf(',', comma1 + 1);
+  for (;;) {
+    if (alertQueue == nullptr || xQueueReceive(alertQueue, &event, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
 
-          String number = line.substring(0, comma1);
-          int enabled = line.substring(comma1 + 1, comma2).toInt();
+    if (!modemReady) {
+      Serial.println("[ALERT] Initializing modem on demand...");
+      initModem();
+    }
 
-          if (enabled) {
-            Serial.printf("[ALERT] Sending to: %s\n", number.c_str());
-            String msg = getAlertMessage("PUMP_DURATION");
-            msg.replace("{DURATION}", String(duration));
-            sendSMS(number, msg);
-            alerted = true;
-            Serial.printf("[ALERT] ✓ ACK: Pump duration alert sent to %s\n", number.c_str());
-          }
-        }
-        f.close();
-        lastPumpAlert = now;
-        if (alerted) {
-          Serial.println("[ALERT] ✓ All pump duration alerts completed");
-        } else {
-          Serial.println("[ALERT] WARNING: No enabled phone numbers found");
-        }
-      }
+    if (!modemReady) {
+      Serial.println("[ALERT] Modem unavailable, event dropped");
+      continue;
+    }
+
+    switch (event.type) {
+      case ALERT_TEMP_HIGH:
+        Serial.printf("[ALERT] Dispatching temperature alert: %lu\n", event.value);
+        sendAlertToEnabledNumbers("TEMP_HIGH", "{TEMP}", event.value);
+        break;
+
+      case ALERT_SPEED_HIGH:
+        Serial.printf("[ALERT] Dispatching speed alert: %lu\n", event.value);
+        sendAlertToEnabledNumbers("SPEED_HIGH", "{SPEED}", event.value);
+        break;
+
+      case ALERT_PUMP_ON:
+        Serial.println("[ALERT] Dispatching pump ON alert");
+        sendAlertToEnabledNumbers("PUMP_ON", "", event.value);
+        break;
+
+      case ALERT_PUMP_OFF:
+        Serial.printf("[ALERT] Dispatching pump OFF alert: %lu sec\n", event.value);
+        sendAlertToEnabledNumbers("PUMP_OFF", "{DURATION}", event.value);
+        break;
+
+      case ALERT_PUMP_DURATION:
+        Serial.printf("[ALERT] Dispatching pump duration alert: %lu sec\n", event.value);
+        sendAlertToEnabledNumbers("PUMP_DURATION", "{DURATION}", event.value);
+        break;
     }
   }
 }

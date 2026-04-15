@@ -5,6 +5,11 @@
 static ModbusRTU mbRTU;
 static const int RXD2 = 9;  // SD2
 static const int TXD2 = 10; // SD3
+static bool prevCoilLedRTU = false;
+static bool prevCoilPumpRTU = false;
+static bool prevCoilLed2RTU = false;
+static uint16_t prevSetTempRTU = 20;
+static uint16_t prevSetSpeedRTU = 100;
 
 void RTU_init() {
   pinMode(LED_PIN,  OUTPUT);
@@ -38,45 +43,53 @@ void RTU_syncFrom() {
   uint16_t newTemp  = mbRTU.Hreg(0);
   uint16_t newSpeed = mbRTU.Hreg(1);
 
-  if (newLed != prevCoilLed_RTU) {
+  if (!Shared_lockState()) {
+    return;
+  }
+
+  if (newLed != prevCoilLedRTU) {
     coilLed = newLed;
-    prevCoilLed_RTU = newLed;
+    prevCoilLedRTU = newLed;
     srcLed = SRC_RTU;
     Serial.printf("[RTU] LED -> %s\n", coilLed ? "ON" : "OFF");
   }
-  if (newPump != prevCoilPump_RTU) {
+  if (newPump != prevCoilPumpRTU) {
     coilPump = newPump;
-    prevCoilPump_RTU = newPump;
+    prevCoilPumpRTU = newPump;
     srcPump = SRC_RTU;
     Serial.printf("[RTU] Pump -> %s\n", coilPump ? "ON" : "OFF");
   }
-  if (newLed2 != prevCoilLed2_RTU) {
+  if (newLed2 != prevCoilLed2RTU) {
     coilLed2 = newLed2;
-    prevCoilLed2_RTU = newLed2;
+    prevCoilLed2RTU = newLed2;
     srcLed2 = SRC_RTU;
     Serial.printf("[RTU] LED2 -> %s\n", coilLed2 ? "ON" : "OFF");
   }
-  if (newTemp != prevSetTemp_RTU) {
+  if (newTemp != prevSetTempRTU) {
     setTemp = newTemp;
-    prevSetTemp_RTU = newTemp;
+    prevSetTempRTU = newTemp;
     srcTemp = SRC_RTU;
     Serial.printf("[RTU] SetTemp -> %d\n", setTemp);
   }
-  if (newSpeed != prevSetSpeed_RTU) {
+  if (newSpeed != prevSetSpeedRTU) {
     setSpeed = newSpeed;
-    prevSetSpeed_RTU = newSpeed;
+    prevSetSpeedRTU = newSpeed;
     srcSpeed = SRC_RTU;
     Serial.printf("[RTU] SetSpeed -> %d\n", setSpeed);
   }
+
+  Shared_unlockState();
 }
 
 void RTU_syncTo() {
-  mbRTU.Coil(0, coilLed);
-  mbRTU.Coil(1, coilPump);
-  mbRTU.Coil(2, coilLed2);
-  mbRTU.Hreg(0, setTemp);
-  mbRTU.Hreg(1, setSpeed);
-  mbRTU.Ireg(0, actualTemp);
-  mbRTU.Ireg(1, voltage);
-  mbRTU.Ireg(2, counterVal);
+  SystemState snapshot = Shared_getSnapshot();
+
+  mbRTU.Coil(0, snapshot.coilLed);
+  mbRTU.Coil(1, snapshot.coilPump);
+  mbRTU.Coil(2, snapshot.coilLed2);
+  mbRTU.Hreg(0, snapshot.setTemp);
+  mbRTU.Hreg(1, snapshot.setSpeed);
+  mbRTU.Ireg(0, snapshot.actualTemp);
+  mbRTU.Ireg(1, snapshot.voltage);
+  mbRTU.Ireg(2, snapshot.counterVal);
 }

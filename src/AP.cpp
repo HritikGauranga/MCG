@@ -9,8 +9,14 @@ AsyncWebServer server(80);
 
 // upload file handle for server callbacks
 static File uploadFile;
+static bool serverRoutesSetup = false;
 
 void createSampleCSVFiles() {
+  if (!Shared_lockFileSystem()) {
+    Serial.println("[CSV] File system busy, skipped sample file creation");
+    return;
+  }
+
   // Sample phone numbers file
   if (!LittleFS.exists("/phone_numbers.csv")) {
     File f = LittleFS.open("/phone_numbers.csv", "w");
@@ -34,13 +40,21 @@ void createSampleCSVFiles() {
     f.close();
     Serial.println("[CSV] Created alert_messages.csv");
   }
+
+  Shared_unlockFileSystem();
 }
 
 void printPhoneNumbers() {
   Serial.println("\n=== Active Phone Numbers ===");
+  if (!Shared_lockFileSystem()) {
+    Serial.println("[ERROR] File system busy");
+    return;
+  }
+
   File f = LittleFS.open("/phone_numbers.csv", "r");
   if (!f) {
     Serial.println("[ERROR] Could not open phone_numbers.csv");
+    Shared_unlockFileSystem();
     return;
   }
 
@@ -66,6 +80,7 @@ void printPhoneNumbers() {
                   count, number.c_str(), enabled ? "YES" : "NO", name.c_str());
   }
   f.close();
+  Shared_unlockFileSystem();
   Serial.println("===========================\n");
 }
 void setupWebServerRoutes() {
@@ -78,18 +93,30 @@ void setupWebServerRoutes() {
 
   // CSV Phone Numbers Download
   server.on("/api/download-csv/phone_numbers", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "text/plain", "File system busy");
+      return;
+    }
     if (LittleFS.exists("/phone_numbers.csv")) {
+      Shared_unlockFileSystem();
       request->send(LittleFS, "/phone_numbers.csv", "text/csv", true);
     } else {
+      Shared_unlockFileSystem();
       request->send(404, "text/plain", "File not found");
     }
   });
 
   // CSV Alert Messages Download
   server.on("/api/download-csv/alert_messages", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "text/plain", "File system busy");
+      return;
+    }
     if (LittleFS.exists("/alert_messages.csv")) {
+      Shared_unlockFileSystem();
       request->send(LittleFS, "/alert_messages.csv", "text/csv", true);
     } else {
+      Shared_unlockFileSystem();
       request->send(404, "text/plain", "File not found");
     }
   });
@@ -104,6 +131,10 @@ void setupWebServerRoutes() {
       
       if (!index) {
         Serial.println("Uploading phone_numbers.csv");
+        if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
+          request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+          return;
+        }
         uploadFile = LittleFS.open("/phone_numbers.csv", "w");
       }
 
@@ -113,6 +144,7 @@ void setupWebServerRoutes() {
 
       if (final) {
         if (uploadFile) uploadFile.close();
+        Shared_unlockFileSystem();
         request->send(200, "application/json", "{\"success\":true}");
         Serial.println("phone_numbers.csv updated");
       }
@@ -128,6 +160,10 @@ void setupWebServerRoutes() {
       
       if (!index) {
         Serial.println("Uploading alert_messages.csv");
+        if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
+          request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+          return;
+        }
         uploadFile = LittleFS.open("/alert_messages.csv", "w");
       }
 
@@ -137,6 +173,7 @@ void setupWebServerRoutes() {
 
       if (final) {
         if (uploadFile) uploadFile.close();
+        Shared_unlockFileSystem();
         request->send(200, "application/json", "{\"success\":true}");
         Serial.println("alert_messages.csv updated");
       }
@@ -144,6 +181,11 @@ void setupWebServerRoutes() {
 
   // API: Get phone numbers status
   server.on("/api/phone-status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
+
     String json = "{\"numbers\":[";
     File f = LittleFS.open("/phone_numbers.csv", "r");
     f.readStringUntil('\n');  // skip header
@@ -171,6 +213,7 @@ void setupWebServerRoutes() {
       first = false;
     }
     f.close();
+    Shared_unlockFileSystem();
     json += "]}";
     request->send(200, "application/json", json);
   });
@@ -184,6 +227,10 @@ void setupWebServerRoutes() {
 
     String targetNumber = request->getParam("number")->value();
     String csvContent = "";
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
     File f = LittleFS.open("/phone_numbers.csv", "r");
 
     // Read header
@@ -214,6 +261,7 @@ void setupWebServerRoutes() {
     fw.print(csvContent); 
     
     fw.close();
+    Shared_unlockFileSystem();
 
     request->send(200, "application/json", "{\"success\":true}");
   });
@@ -230,6 +278,10 @@ void setupWebServerRoutes() {
     String name = request->getParam("name")->value();
 
     String csvContent = "";
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
     File f = LittleFS.open("/phone_numbers.csv", "r");
 
     // Read header
@@ -258,6 +310,7 @@ void setupWebServerRoutes() {
     File fw = LittleFS.open("/phone_numbers.csv", "w");
     fw.print(csvContent); 
     fw.close();
+    Shared_unlockFileSystem();
 
     request->send(200, "application/json", "{\"success\":true}");
   });
@@ -274,6 +327,10 @@ void setupWebServerRoutes() {
     String newName = request->getParam("newName")->value();
 
     String csvContent = "";
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
     File f = LittleFS.open("/phone_numbers.csv", "r");
 
     // Read header
@@ -303,6 +360,7 @@ void setupWebServerRoutes() {
     f.close();
 
     if (!found) {
+      Shared_unlockFileSystem();
       request->send(404, "application/json", "{\"error\":\"Phone number not found\"}");
       return;
     }
@@ -310,6 +368,7 @@ void setupWebServerRoutes() {
     File fw = LittleFS.open("/phone_numbers.csv", "w");
     fw.print(csvContent);
     fw.close();
+    Shared_unlockFileSystem();
 
     request->send(200, "application/json", "{\"success\":true}");
   });
@@ -319,7 +378,7 @@ void setupWebServerRoutes() {
 }
 
 void startAPMode() {
-  if (apModeActive) return;  // Already running
+  if (Shared_isAPModeActive()) return;  // Already running
   
   Serial.println("\n=== Starting AP Mode ===");
   
@@ -341,18 +400,18 @@ void startAPMode() {
   server.begin();
   Serial.println("WebUI available at: http://192.168.4.1");
   
-  apModeActive = true;
+  Shared_setAPModeActive(true);
 }
 
 void stopAPMode() {
-  if (!apModeActive) return;  // Already stopped
+  if (!Shared_isAPModeActive()) return;  // Already stopped
   
   Serial.println("\n=== Stopping AP Mode ===");
   WiFi.softAPdisconnect(true);  // true = turn off AP
   WiFi.mode(WIFI_OFF);
   delay(100);
   
-  apModeActive = false;
+  Shared_setAPModeActive(false);
   Serial.println("AP Mode disabled (switch to ON position to enable)");
 }
 

@@ -9,6 +9,11 @@ static EthernetServer ethServer(502);
 static ModbusTCPServer modbusTCPServer;
 static EthernetClient activeClient;
 static bool clientActive = false;
+static bool prevCoilLedTCP = false;
+static bool prevCoilPumpTCP = false;
+static bool prevCoilLed2TCP = false;
+static uint16_t prevSetTempTCP = 20;
+static uint16_t prevSetSpeedTCP = 100;
 
 void TCP_init() {
   Serial.println("\n=== Initializing Ethernet (W5500) ===");
@@ -123,45 +128,53 @@ void TCP_syncFrom() {
   uint16_t newTemp  = modbusTCPServer.holdingRegisterRead(0);
   uint16_t newSpeed = modbusTCPServer.holdingRegisterRead(1);
 
-  if (newLed != prevCoilLed_TCP) {
+  if (!Shared_lockState()) {
+    return;
+  }
+
+  if (newLed != prevCoilLedTCP) {
     coilLed = newLed;
-    prevCoilLed_TCP = newLed;
+    prevCoilLedTCP = newLed;
     srcLed = SRC_TCP;
     Serial.printf("[TCP] LED -> %s\n", coilLed ? "ON" : "OFF");
   }
-  if (newPump != prevCoilPump_TCP) {
+  if (newPump != prevCoilPumpTCP) {
     coilPump = newPump;
-    prevCoilPump_TCP = newPump;
+    prevCoilPumpTCP = newPump;
     srcPump = SRC_TCP;
     Serial.printf("[TCP] Pump -> %s\n", coilPump ? "ON" : "OFF");
   }
-  if (newLed2 != prevCoilLed2_TCP) {
+  if (newLed2 != prevCoilLed2TCP) {
     coilLed2 = newLed2;
-    prevCoilLed2_TCP = newLed2;
+    prevCoilLed2TCP = newLed2;
     srcLed2 = SRC_TCP;
     Serial.printf("[TCP] LED2 -> %s\n", coilLed2 ? "ON" : "OFF");
   }
-  if (newTemp != prevSetTemp_TCP) {
+  if (newTemp != prevSetTempTCP) {
     setTemp = newTemp;
-    prevSetTemp_TCP = newTemp;
+    prevSetTempTCP = newTemp;
     srcTemp = SRC_TCP;
     Serial.printf("[TCP] SetTemp -> %d\n", setTemp);
   }
-  if (newSpeed != prevSetSpeed_TCP) {
+  if (newSpeed != prevSetSpeedTCP) {
     setSpeed = newSpeed;
-    prevSetSpeed_TCP = newSpeed;
+    prevSetSpeedTCP = newSpeed;
     srcSpeed = SRC_TCP;
     Serial.printf("[TCP] SetSpeed -> %d\n", setSpeed);
   }
+
+  Shared_unlockState();
 }
 
 void TCP_syncTo() {
-  modbusTCPServer.coilWrite(0, coilLed);
-  modbusTCPServer.coilWrite(1, coilPump);
-  modbusTCPServer.coilWrite(2, coilLed2);
-  modbusTCPServer.holdingRegisterWrite(0, setTemp);
-  modbusTCPServer.holdingRegisterWrite(1, setSpeed);
-  modbusTCPServer.inputRegisterWrite(0, actualTemp);
-  modbusTCPServer.inputRegisterWrite(1, voltage);
-  modbusTCPServer.inputRegisterWrite(2, counterVal);
+  SystemState snapshot = Shared_getSnapshot();
+
+  modbusTCPServer.coilWrite(0, snapshot.coilLed);
+  modbusTCPServer.coilWrite(1, snapshot.coilPump);
+  modbusTCPServer.coilWrite(2, snapshot.coilLed2);
+  modbusTCPServer.holdingRegisterWrite(0, snapshot.setTemp);
+  modbusTCPServer.holdingRegisterWrite(1, snapshot.setSpeed);
+  modbusTCPServer.inputRegisterWrite(0, snapshot.actualTemp);
+  modbusTCPServer.inputRegisterWrite(1, snapshot.voltage);
+  modbusTCPServer.inputRegisterWrite(2, snapshot.counterVal);
 }

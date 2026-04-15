@@ -1,7 +1,27 @@
 #pragma once
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 typedef enum { SRC_NONE, SRC_RTU, SRC_TCP } DataSource;
+
+struct SystemState {
+  DataSource srcLed;
+  DataSource srcPump;
+  DataSource srcLed2;
+  DataSource srcTemp;
+  DataSource srcSpeed;
+
+  bool coilLed;
+  bool coilPump;
+  bool coilLed2;
+  uint16_t setTemp;
+  uint16_t setSpeed;
+  uint16_t actualTemp;
+  uint16_t voltage;
+  uint16_t counterVal;
+  bool apModeActive;
+};
 
 // Pins
 extern const int LED_PIN;
@@ -44,21 +64,7 @@ extern unsigned long lastPumpAlert;
 extern unsigned long lastPumpOnAlert;
 extern unsigned long lastPumpOffAlert;
 extern unsigned long pumpOnStart;
-extern bool pumpWereOn;
 extern bool pumpWasOn;
-
-// Previous values
-extern bool     prevCoilLed_RTU;
-extern bool     prevCoilPump_RTU;
-extern bool     prevCoilLed2_RTU;
-extern uint16_t prevSetTemp_RTU;
-extern uint16_t prevSetSpeed_RTU;
-
-extern bool     prevCoilLed_TCP;
-extern bool     prevCoilPump_TCP;
-extern bool     prevCoilLed2_TCP;
-extern uint16_t prevSetTemp_TCP;
-extern uint16_t prevSetSpeed_TCP;
 
 // Timing
 extern const unsigned long LOOP_INTERVAL_MS;
@@ -66,11 +72,19 @@ extern const unsigned long DHCP_RENEW_MS;
 extern const unsigned long BUTTON_DEBOUNCE_MS;
 extern unsigned long lastLoopTime;
 extern unsigned long lastDHCPCheck;
-extern unsigned long lastButtonChange;
 extern bool apModeActive;
-extern bool serverRoutesSetup;
-extern bool lastButtonState;
+
+extern SemaphoreHandle_t stateMutex;
+extern SemaphoreHandle_t filesystemMutex;
 
 // Utilities
+void Shared_init();
+bool Shared_lockState(TickType_t timeout = pdMS_TO_TICKS(50));
+void Shared_unlockState();
+bool Shared_lockFileSystem(TickType_t timeout = pdMS_TO_TICKS(500));
+void Shared_unlockFileSystem();
+SystemState Shared_getSnapshot();
+bool Shared_isAPModeActive();
+void Shared_setAPModeActive(bool active);
 void applyHardware();
 void updateSimulatedMetrics();
