@@ -121,6 +121,54 @@ void setupWebServerRoutes() {
     }
   });
 
+  // CSV Phone Numbers Delete
+  server.on("/api/delete-csv/phone_numbers", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
+
+    if (!LittleFS.exists("/phone_numbers.csv")) {
+      Shared_unlockFileSystem();
+      request->send(404, "application/json", "{\"error\":\"File not found\"}");
+      return;
+    }
+
+    bool removed = LittleFS.remove("/phone_numbers.csv");
+    Shared_unlockFileSystem();
+
+    if (!removed) {
+      request->send(500, "application/json", "{\"error\":\"Delete failed\"}");
+      return;
+    }
+
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
+  // CSV Alert Messages Delete
+  server.on("/api/delete-csv/alert_messages", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "application/json", "{\"error\":\"File system busy\"}");
+      return;
+    }
+
+    if (!LittleFS.exists("/alert_messages.csv")) {
+      Shared_unlockFileSystem();
+      request->send(404, "application/json", "{\"error\":\"File not found\"}");
+      return;
+    }
+
+    bool removed = LittleFS.remove("/alert_messages.csv");
+    Shared_unlockFileSystem();
+
+    if (!removed) {
+      request->send(500, "application/json", "{\"error\":\"Delete failed\"}");
+      return;
+    }
+
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
   // CSV Phone Numbers Upload
   server.on(
     "/api/upload-csv/phone_numbers",
@@ -866,14 +914,16 @@ body {
       <h2>📋 Phone Numbers CSV</h2>
       <p style="font-size:13px; color:#666; margin-bottom:15px;">Download the default phone list, edit with your numbers, and upload back.</p>
       <button class="btn-action btn-download" onclick="downloadPhoneCSV()" style="width:100%; margin-bottom:8px;">⬇️ Download phone_numbers.csv</button>
-      <button class="btn-action btn-download" onclick="uploadPhoneCSVPrompt()" style="width:100%;">📤 Upload phone_numbers.csv</button>
+      <button class="btn-action btn-download" onclick="uploadPhoneCSVPrompt()" style="width:100%; margin-bottom:8px;">📤 Upload phone_numbers.csv</button>
+      <button class="btn-action btn-delete" onclick="deleteCSV('phone_numbers')" style="width:100%;">🗑️ Delete phone_numbers.csv</button>
     </div>
 
     <div class="files-section">
       <h2>🔔 Alert Messages CSV</h2>
       <p style="font-size:13px; color:#666; margin-bottom:15px;">Download alert templates, customize messages, and upload back.</p>
       <button class="btn-action btn-download" onclick="downloadAlertCSV()" style="width:100%; margin-bottom:8px;">⬇️ Download alert_messages.csv</button>
-      <button class="btn-action btn-download" onclick="uploadAlertCSVPrompt()" style="width:100%;">📤 Upload alert_messages.csv</button>
+      <button class="btn-action btn-download" onclick="uploadAlertCSVPrompt()" style="width:100%; margin-bottom:8px;">📤 Upload alert_messages.csv</button>
+      <button class="btn-action btn-delete" onclick="deleteCSV('alert_messages')" style="width:100%;">🗑️ Delete alert_messages.csv</button>
     </div>
 
     <div class="files-section">
@@ -1000,6 +1050,32 @@ function uploadCSVFile() {
   })
   .catch(e => {
     showStatus("CSV upload failed: " + e.message, "error");
+  });
+}
+
+function deleteCSV(fileType) {
+  const fileName = fileType + ".csv";
+
+  if (!confirm("Delete " + fileName + " from device storage?")) {
+    return;
+  }
+
+  fetch("/api/delete-csv/" + fileType, {
+    method: "POST"
+  })
+  .then(async r => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      throw new Error(data.error || ("HTTP " + r.status));
+    }
+    return data;
+  })
+  .then(() => {
+    showStatus(fileName + " deleted successfully!", "success");
+    loadPhoneNumbers();
+  })
+  .catch(e => {
+    showStatus("Delete failed: " + e.message, "error");
   });
 }
 

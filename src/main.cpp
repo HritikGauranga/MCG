@@ -97,9 +97,33 @@ void setup() {
     Serial.println("[ALERT] Failed to create alert queue");
   }
 
-  xTaskCreatePinnedToCore(communicationTask, "CommTask", COMM_TASK_STACK, nullptr, 3, nullptr, 1);
-  xTaskCreatePinnedToCore(controlTask, "ControlTask", CONTROL_TASK_STACK, nullptr, 2, nullptr, 1);
-  xTaskCreatePinnedToCore(Alerts_task, "AlertTask", ALERT_TASK_STACK, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(
+    communicationTask, // Task function
+    "CommTask", // Task name
+    COMM_TASK_STACK, // Stack size: this is define in 
+    nullptr, // Task parameters (not used) //example if used: could pass a pointer to a shared data structure if needed
+    3, // Priority: higher than control and alert tasks to ensure responsive comms
+    nullptr, // Task handle (not used): example if used: could store the handle to manage the task later (e.g., suspend/resume)
+    1 // Core affinity: pin to core 1 to keep it separate from control and alert tasks on core 0
+  );
+  xTaskCreatePinnedToCore(
+    controlTask, 
+    "ControlTask", 
+    CONTROL_TASK_STACK, 
+    nullptr, 
+    2, 
+    nullptr, 
+    1
+  );
+  xTaskCreatePinnedToCore(
+    Alerts_task, 
+    "AlertTask", 
+    ALERT_TASK_STACK, 
+    nullptr, 
+    1, 
+    nullptr, 
+    0
+  );
 
   Serial.println("\n=== RTOS Startup Complete ===");
   Serial.println("Tasks: CommTask, ControlTask, AlertTask");
@@ -109,3 +133,4 @@ void setup() {
 void loop() {
   vTaskDelay(pdMS_TO_TICKS(1000));
 }
+
