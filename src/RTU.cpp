@@ -33,7 +33,8 @@ void RTU_init() {
 }
 
 void RTU_task() {
-  mbRTU.task();
+  mbRTU.task(); //This line means 
+  delayMicroseconds(200); // prevents CPU hogging
 }
 
 void RTU_syncFrom() {
