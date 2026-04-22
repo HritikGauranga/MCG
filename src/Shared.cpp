@@ -1,59 +1,76 @@
 #include "Shared.h"
+#include <LittleFS.h>
 
-// Pins
-const int LED_PIN = 2;
-const int PUMP_PIN = 15;
-const int LED_PIN2 = 22;
 const int BUTTON_PIN = 33;
-
-// Modem pins
 const int MODEM_RX = 16;
 const int MODEM_TX = 17;
 const int MODEM_PWRKEY = 32;
 
-// Alert thresholds
-const uint16_t TEMP_ALERT_THRESHOLD = 50;
-const uint16_t SPEED_ALERT_THRESHOLD = 150;
-const unsigned long PUMP_TIME_ALERT = 3600000;  // 1 hour
-const unsigned long ALERT_COOLDOWN = 300000;    // 5 minutes
-
-// Source tracking
-DataSource srcLed = SRC_NONE;
-DataSource srcPump = SRC_NONE;
-DataSource srcLed2 = SRC_NONE;
-DataSource srcTemp = SRC_NONE;
-DataSource srcSpeed = SRC_NONE;
-
-// Shared data
-bool     coilLed = false;
-bool     coilPump = false;
-bool     coilLed2 = false;
-uint16_t setTemp = 20;
-uint16_t setSpeed = 100;
-uint16_t actualTemp = 0;
-uint16_t voltage = 230;
-uint16_t counterVal = 0;
-
-// Alert tracking
-unsigned long lastTempAlert = 0;
-unsigned long lastSpeedAlert = 0;
-unsigned long lastPumpAlert = 0;
-unsigned long lastPumpOnAlert = 0;
-unsigned long lastPumpOffAlert = 0;
-unsigned long pumpOnStart = 0;
-bool pumpWasOn = false;
-
-// Timing
-const unsigned long LOOP_INTERVAL_MS = 10;
 const unsigned long DHCP_RENEW_MS = 60000;
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
-unsigned long lastLoopTime = 0;
-unsigned long lastDHCPCheck = 0;
-bool apModeActive = false;
+
 SemaphoreHandle_t stateMutex = nullptr;
 SemaphoreHandle_t filesystemMutex = nullptr;
 
-// Utilities
+static bool apModeActive = false;
+static uint16_t triggerRegs[MESSAGE_SLOT_COUNT] = {};
+static int16_t resultRegs[MESSAGE_SLOT_COUNT] = {};
+static int16_t inputRegs[INPUT_REGISTER_COUNT] = {STATE_READY, STATE_UNKNOWN, STATE_UNKNOWN, STATE_UNKNOWN};
+static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
+static size_t loadedMessageCount = 0;
+
+static String trimCopy(const String &value) {
+  String copy = value;
+  copy.trim();
+  return copy;
+}
+
+static void clearMessageConfig() {
+  memset(messageConfigs, 0, sizeof(messageConfigs));
+  loadedMessageCount = 0;
+}
+
+static bool parseMessageLine(const String &line, MessageConfig &config) {
+  int commas[6] = {-1, -1, -1, -1, -1, -1};
+  int found = 0;
+
+  for (int i = 0; i < line.length() && found < 6; ++i) {
+    if (line.charAt(i) == ',') {
+      commas[found++] = i;
+    }
+  }
+
+  if (found < 6) {
+    return false;
+  }
+
+  String msgNoStr = trimCopy(line.substring(0, commas[0]));
+  int msgNo = msgNoStr.toInt();
+  if (msgNo < 1 || msgNo > (int)MESSAGE_SLOT_COUNT) {
+    return false;
+  }
+
+  memset(&config, 0, sizeof(config));
+  config.valid = true;
+  config.msgNo = (uint8_t)msgNo;
+
+  for (size_t phoneIndex = 0; phoneIndex < PHONE_SLOTS_PER_MESSAGE; ++phoneIndex) {
+    int start = commas[phoneIndex] + 1;
+    int end = commas[phoneIndex + 1];
+    String number = trimCopy(line.substring(start, end));
+    if (number.length() == 0) {
+      continue;
+    }
+
+    number.toCharArray(config.phoneNumbers[phoneIndex], PHONE_NUMBER_LENGTH);
+    config.phoneCount++;
+  }
+
+  String message = trimCopy(line.substring(commas[5] + 1));
+  message.toCharArray(config.text, MESSAGE_TEXT_LENGTH);
+  return message.length() > 0;
+}
+
 void Shared_init() {
   if (stateMutex == nullptr) {
     stateMutex = xSemaphoreCreateMutex();
@@ -84,30 +101,140 @@ void Shared_unlockFileSystem() {
   }
 }
 
-SystemState Shared_getSnapshot() {
-  SystemState snapshot = {};
+bool Shared_loadMessageConfig() {
+  static MessageConfig parsedConfigs[MESSAGE_SLOT_COUNT];
+  size_t parsedCount = 0;
+  memset(parsedConfigs, 0, sizeof(parsedConfigs));
+
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
+    return false;
+  }
+
+  File f = LittleFS.open("/MBmapconf.csv", "r");
+  if (!f) {
+    if (Shared_lockState(pdMS_TO_TICKS(2000))) {
+      clearMessageConfig();
+      Shared_unlockState();
+    }
+    Shared_unlockFileSystem();
+    return false;
+  }
+
+  if (f.available()) {
+    f.readStringUntil('\n');
+  }
+
+  while (f.available()) {
+    String line = trimCopy(f.readStringUntil('\n'));
+    if (line.length() == 0) {
+      continue;
+    }
+
+    MessageConfig config = {};
+    if (!parseMessageLine(line, config)) {
+      continue;
+    }
+
+    size_t slot = (size_t)(config.msgNo - 1);
+    parsedConfigs[slot] = config;
+    parsedCount++;
+  }
+
+  f.close();
+  Shared_unlockFileSystem();
+
+  if (!Shared_lockState(pdMS_TO_TICKS(2000))) {
+    return false;
+  }
+
+  memset(messageConfigs, 0, sizeof(messageConfigs));
+  memcpy(messageConfigs, parsedConfigs, sizeof(parsedConfigs));
+  loadedMessageCount = parsedCount;
+  Shared_unlockState();
+  return true;
+}
+
+size_t Shared_getLoadedMessageCount() {
+  size_t count = 0;
+
+  if (Shared_lockState()) {
+    count = loadedMessageCount;
+    Shared_unlockState();
+  } else {
+    count = loadedMessageCount;
+  }
+
+  return count;
+}
+
+bool Shared_getMessageConfig(size_t index, MessageConfig &config) {
+  if (index >= MESSAGE_SLOT_COUNT) {
+    return false;
+  }
+
+  if (!Shared_lockState()) {
+    return false;
+  }
+
+  config = messageConfigs[index];
+  Shared_unlockState();
+  return config.valid;
+}
+
+SystemSnapshot Shared_getSnapshot() {
+  SystemSnapshot snapshot = {};
 
   if (!Shared_lockState()) {
     return snapshot;
   }
 
-  snapshot.srcLed = srcLed;
-  snapshot.srcPump = srcPump;
-  snapshot.srcLed2 = srcLed2;
-  snapshot.srcTemp = srcTemp;
-  snapshot.srcSpeed = srcSpeed;
-  snapshot.coilLed = coilLed;
-  snapshot.coilPump = coilPump;
-  snapshot.coilLed2 = coilLed2;
-  snapshot.setTemp = setTemp;
-  snapshot.setSpeed = setSpeed;
-  snapshot.actualTemp = actualTemp;
-  snapshot.voltage = voltage;
-  snapshot.counterVal = counterVal;
   snapshot.apModeActive = apModeActive;
+  memcpy(snapshot.triggerRegs, triggerRegs, sizeof(triggerRegs));
+  memcpy(snapshot.resultRegs, resultRegs, sizeof(resultRegs));
+  memcpy(snapshot.inputRegs, inputRegs, sizeof(inputRegs));
 
   Shared_unlockState();
   return snapshot;
+}
+
+bool Shared_readTriggerRegister(size_t index, uint16_t &value) {
+  if (index >= MESSAGE_SLOT_COUNT || !Shared_lockState()) {
+    return false;
+  }
+
+  value = triggerRegs[index];
+  Shared_unlockState();
+  return true;
+}
+
+bool Shared_writeTriggerRegister(size_t index, uint16_t value) {
+  if (index >= MESSAGE_SLOT_COUNT || !Shared_lockState()) {
+    return false;
+  }
+
+  triggerRegs[index] = value;
+  Shared_unlockState();
+  return true;
+}
+
+bool Shared_writeResultRegister(size_t index, int16_t value) {
+  if (index >= MESSAGE_SLOT_COUNT || !Shared_lockState()) {
+    return false;
+  }
+
+  resultRegs[index] = value;
+  Shared_unlockState();
+  return true;
+}
+
+bool Shared_writeInputRegister(size_t index, int16_t value) {
+  if (index >= INPUT_REGISTER_COUNT || !Shared_lockState()) {
+    return false;
+  }
+
+  inputRegs[index] = value;
+  Shared_unlockState();
+  return true;
 }
 
 bool Shared_isAPModeActive() {
@@ -128,26 +255,6 @@ void Shared_setAPModeActive(bool active) {
   }
 }
 
-void applyHardware() {
-  if (!Shared_lockState()) {
-    return;
-  }
-
-  digitalWrite(LED_PIN,  coilLed  ? HIGH : LOW);
-  digitalWrite(PUMP_PIN, coilPump ? HIGH : LOW);
-  digitalWrite(LED_PIN2, coilLed2 ? HIGH : LOW);
-
-  Shared_unlockState();
-}
-
-void updateSimulatedMetrics() {
-  if (!Shared_lockState()) {
-    return;
-  }
-
-  counterVal = millis() / 1000;
-  actualTemp = setTemp + (millis() % 5);
-  voltage    = 220 + (millis() % 10);
-
-  Shared_unlockState();
+uint16_t encodeSignedRegister(int16_t value) {
+  return static_cast<uint16_t>(value);
 }

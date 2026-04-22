@@ -1,0 +1,2 @@
+We'll be using 100 holding Reg, in which 50(40001-40050) will act as Cmd Reg and 50(40051) will act as Status Reg for all Cmg Reg respectivelty.
+Input Reg(3001)-Devices status, 30002 Modem status, 30003 SIM status, 30004 Network Status

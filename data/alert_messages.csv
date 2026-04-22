@@ -1,4 +1,18 @@
 AlertType,Template
-TEMP_HIGH,🔥 ALERT: Temperature Critical! Current: {TEMP}°C (Limit: 50°C) - Action Required!
-SPEED_HIGH,⚡ ALERT: Speed Exceeds Limit! Current: {SPEED} RPM (Limit: 150 RPM) - Check System!
-PUMP_DURATION,⏱️ ALERT: Pump Running Long! Duration: {DURATION} seconds (1hr limit) - Verify Operation!
+TEMP_HIGH, ALERT: Temperature Critical! Current: {TEMP}°C (Limit: 50°C) - Action Required!
+SPEED_HIGH, ALERT: Speed Exceeds Limit! Current: {SPEED} RPM (Limit: 150 RPM) - Check System!
+PUMP_DURATION, ALERT: Pump Running Long! Duration: {DURATION} seconds (1hr limit) - Verify Operation!
+
+// Need 50 more templates for different alert types and conditions.
+Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message
+1, 9923456789, 9987654321, 8149979689, 9123456789, 9876543210 , ALARM: Temperature is HIGH!
+2, 9923456789, , 8149979689, 9123456789, 9876543210 , ALARM: Pump oil Temperature is HIGH!
+3, 9923456789, , , 9123456789, 9876543210 , Returne to normal: Temperature is back to normal.
+4, 9923456789, , , , 9876543210 , ALARM: Pump oil Temperature is back to normal.
+5, 9923456789, , , , , ALARM: Speed is HIGH!
+6, , 9987654321, 8149979689, 9123456789, 9876543210 , Returne to normal: Speed is back to normal.
+7, , 9987654321, 8149979689, 9123456789, , ALARM: Pump Running Long!
+8, 9923456789, 9987654321, 8149979689, 9123456789, 9876543210 , Returne to normal: Pump duration is back to normal.
+9, 9923456789, 9987654321, 8149979689, 9123456789, 9876543210 , ALARM: Vibration is HIGH!
+10, 9923456789, 9987654321, 8149979689, 9123456789, 9876543210 , Returne to normal: Vibration is back to normal.
+11, 9923456789, 9987654321, 8149979689, 9123456789, 9876543210 , ALARM: Pressure is HIGH!

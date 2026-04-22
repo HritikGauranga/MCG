@@ -1,11 +1,82 @@
+This `test` folder documents the current firmware behavior and the intended manual verification flow for the ESP32 RTOS SMS controller.
 
-This directory is intended for PlatformIO Test Runner and project tests.
+Current firmware architecture:
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+- `RTUTask`
+  - Owns Modbus RTU slave communication.
+  - Mirrors holding and input registers to the shared register bank.
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+- `TCPTask`
+  - Owns Modbus TCP communication over W5500 Ethernet.
+  - Mirrors holding and input registers to the shared register bank.
+
+- `SmsTask`
+  - Watches trigger holding registers `40001..40050`.
+  - Detects only `0 -> 1` transitions.
+  - Looks up message rows from `MBmapconf.csv`.
+  - Sends SMS to configured phone numbers.
+  - Updates result holding registers `40051..40100`.
+  - Updates input registers `30001..30004` for runtime status.
+
+- `ApTask`
+  - Polls the latch switch.
+  - Starts/stops AP mode.
+  - Exposes web endpoints for managing `MBmapconf.csv`.
+
+Configuration model:
+
+- The active runtime configuration file is:
+  - `data/MBmapconf.csv`
+
+- Each CSV row represents one SMS job:
+  - `Msg.No.`
+  - `Phone number1..Phone number5`
+  - `Text message`
+
+Trigger model:
+
+- Holding registers `40001..40050` are command registers.
+- Writing `1` to `40001` triggers message row `1`.
+- Writing `1` to `40002` triggers message row `2`.
+- Firmware does not reset these registers back to `0`.
+- To trigger the same message again, the Modbus master must write:
+  - `0`
+  - then `1`
+
+Result model:
+
+- Holding registers `40051..40100` are feedback/result registers.
+- Result meanings currently used:
+  - `0` = idle / no result yet
+  - `1..5` = SMS sent successfully to that many numbers
+  - `-1` = send failed
+  - `-2` = SIM error
+  - `-3` = network error
+  - `-4` = invalid message configuration
+  - `-5` = no valid phone numbers in the selected row
+  - `-6` = modem/queue error
+
+Status model:
+
+- Input registers `30001..30004` expose runtime state:
+  - `30001` = device status
+  - `30002` = modem status
+  - `30003` = SIM status
+  - `30004` = network status
+
+Important note:
+
+- If a Modbus tool shows negative values as unsigned 16-bit numbers, interpret them as signed register values.
+- Example:
+  - `65535` means `-1`
+  - `65534` means `-2`
+
+Manual verification should focus on:
+
+- Boot stability after power-on
+- `MBmapconf.csv` loading correctly from LittleFS
+- RTU trigger writes
+- TCP trigger writes
+- Single-shot trigger behavior on `0 -> 1`
+- Correct result register updates
+- Correct modem/SIM/network status reporting
