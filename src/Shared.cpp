@@ -25,6 +25,51 @@ static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;
 
 // ---------------------------------------------------------------------------
+// LastSeen tracking (prevents re-triggering when RTU/TCP mirror each other)
+// ---------------------------------------------------------------------------
+static uint16_t rtuLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
+static uint16_t tcpLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
+
+void Shared_updateLastSeenTriggers() {
+  if (!Shared_lockState(pdMS_TO_TICKS(50))) return;
+  
+  // After mirroring, update both lastSeen arrays to match current shared state
+  // This prevents syncFrom() from re-reading our own mirror as a new master write
+  for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    rtuLastSeenTriggers[i] = triggerRegs[i];
+    tcpLastSeenTriggers[i] = triggerRegs[i];
+  }
+  
+  Shared_unlockState();
+}
+
+// Getters for RTU and TCP to use in syncFrom()
+bool Shared_getRTULastSeenTrigger(size_t index, uint16_t &value) {
+  if (index >= MESSAGE_SLOT_COUNT) return false;
+  value = rtuLastSeenTriggers[index];
+  return true;
+}
+
+bool Shared_getTCPLastSeenTrigger(size_t index, uint16_t &value) {
+  if (index >= MESSAGE_SLOT_COUNT) return false;
+  value = tcpLastSeenTriggers[index];
+  return true;
+}
+
+// Setters for RTU and TCP to update after reading
+bool Shared_setRTULastSeenTrigger(size_t index, uint16_t value) {
+  if (index >= MESSAGE_SLOT_COUNT) return false;
+  rtuLastSeenTriggers[index] = value;
+  return true;
+}
+
+bool Shared_setTCPLastSeenTrigger(size_t index, uint16_t value) {
+  if (index >= MESSAGE_SLOT_COUNT) return false;
+  tcpLastSeenTriggers[index] = value;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
 String Shared_trimCopy(const String &value) {

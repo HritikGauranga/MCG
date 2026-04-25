@@ -94,3 +94,11 @@ void Shared_setAPModeActive(bool active);
 
 // Encoding
 uint16_t encodeSignedRegister(int16_t value);
+
+// LastSeen tracking (prevents re-triggering on mirror writes)
+// Call this in syncTo() after mirroring trigger registers
+void Shared_updateLastSeenTriggers();
+bool Shared_getRTULastSeenTrigger(size_t index, uint16_t &value);
+bool Shared_getTCPLastSeenTrigger(size_t index, uint16_t &value);
+bool Shared_setRTULastSeenTrigger(size_t index, uint16_t value);
+bool Shared_setTCPLastSeenTrigger(size_t index, uint16_t value);

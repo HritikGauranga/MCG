@@ -193,16 +193,16 @@ void TCP_processNetwork() {
 // Both TCP and RTU write to the same shared array — stateMutex ensures
 // no torn writes. The Modem task reads from shared and detects rising edges.
 // ---------------------------------------------------------------------------
-// Track the last value TCP saw so we only write to shared on an actual change.
-static uint16_t tcpLastSeen[MESSAGE_SLOT_COUNT] = {};
-
 void TCP_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t tcpVal = (uint16_t)modbusTCPServer.holdingRegisterRead(TRIGGER_REGISTER_START + i);
-    if (tcpVal != tcpLastSeen[i]) {
+    uint16_t lastSeen = 0;
+    Shared_getTCPLastSeenTrigger(i, lastSeen);
+    
+    if (tcpVal != lastSeen) {
       // TCP master actually changed this register — push the change to shared
       Shared_writeTriggerRegister(i, tcpVal);
-      tcpLastSeen[i] = tcpVal;
+      Shared_setTCPLastSeenTrigger(i, tcpVal);
     }
     // If unchanged, leave shared alone — RTU may have written a newer value
   }
@@ -210,23 +210,26 @@ void TCP_syncFrom() {
 
 // ---------------------------------------------------------------------------
 // syncTo: push shared state back into TCP server registers for readback.
-// Also update tcpLastSeen so syncFrom doesn't treat our own mirror writes
-// as new TCP master writes on the next cycle.
+// After mirroring trigger registers to both TCP and RTU servers, call
+// Shared_updateLastSeenTriggers() so syncFrom() knows not to re-trigger
+// on the values we just mirrored.
 // ---------------------------------------------------------------------------
 void TCP_syncTo() {
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    // Mirror trigger state so both RTU and TCP masters can read what's in shared
     modbusTCPServer.holdingRegisterWrite(TRIGGER_REGISTER_START + i, snapshot.triggerRegs[i]);
-    modbusTCPServer.holdingRegisterWrite(RESULT_REGISTER_START  + i, encodeSignedRegister(snapshot.resultRegs[i]));
-    // Keep tcpLastSeen aligned with what we just wrote so syncFrom
-    // does not mistake our own mirror as a new TCP master write
-    tcpLastSeen[i] = snapshot.triggerRegs[i];
+    // Result registers (status codes, may be negative — encode as uint16)
+    modbusTCPServer.holdingRegisterWrite(RESULT_REGISTER_START + i, encodeSignedRegister(snapshot.resultRegs[i]));
   }
 
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT; ++i) {
     modbusTCPServer.inputRegisterWrite(i, encodeSignedRegister(snapshot.inputRegs[i]));
   }
+  
+  // Update lastSeen tracking to prevent re-triggering on mirror writes
+  Shared_updateLastSeenTriggers();
 }
 
 void TCP_taskLoop(void *pvParameters) {

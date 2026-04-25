@@ -105,17 +105,16 @@ void RTU_process() {
 // detects the rising edge (0→1) from the shared copy and never misses it
 // because it never writes back to trigger registers itself.
 // ---------------------------------------------------------------------------
-// Track the last value RTU saw so we only write to shared on an actual change.
-// This prevents RTU from clobbering a value that TCP wrote, and vice versa.
-static uint16_t rtuLastSeen[MESSAGE_SLOT_COUNT] = {};
-
 void RTU_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t rtuVal = mbRTU.Hreg(TRIGGER_REGISTER_START + i);
-    if (rtuVal != rtuLastSeen[i]) {
+    uint16_t lastSeen = 0;
+    Shared_getRTULastSeenTrigger(i, lastSeen);
+    
+    if (rtuVal != lastSeen) {
       // RTU master actually changed this register — push the change to shared
       Shared_writeTriggerRegister(i, rtuVal);
-      rtuLastSeen[i] = rtuVal;
+      Shared_setRTULastSeenTrigger(i, rtuVal);
     }
     // If unchanged, leave shared alone — TCP may have written a newer value
   }
@@ -123,23 +122,26 @@ void RTU_syncFrom() {
 
 // ---------------------------------------------------------------------------
 // syncTo: push shared state back into RTU server registers for readback.
-// Also update rtuLastSeen so syncFrom doesn't treat our own mirror writes
-// as new RTU master writes on the next cycle.
+// After mirroring trigger registers to both RTU and TCP servers, call
+// Shared_updateLastSeenTriggers() so syncFrom() knows not to re-trigger
+// on the values we just mirrored.
 // ---------------------------------------------------------------------------
 void RTU_syncTo() {
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    // Mirror trigger state so both RTU and TCP masters can read what's in shared
     mbRTU.Hreg(TRIGGER_REGISTER_START + i, snapshot.triggerRegs[i]);
-    mbRTU.Hreg(RESULT_REGISTER_START  + i, encodeSignedRegister(snapshot.resultRegs[i]));
-    // Keep rtuLastSeen aligned with what we just wrote so syncFrom
-    // does not mistake our own mirror as a new RTU master write
-    rtuLastSeen[i] = snapshot.triggerRegs[i];
+    // Result registers (status codes, may be negative — encode as uint16)
+    mbRTU.Hreg(RESULT_REGISTER_START + i, encodeSignedRegister(snapshot.resultRegs[i]));
   }
 
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT; ++i) {
     mbRTU.Ireg(i, encodeSignedRegister(snapshot.inputRegs[i]));
   }
+  
+  // Update lastSeen tracking to prevent re-triggering on mirror writes
+  Shared_updateLastSeenTriggers();
 }
 
 void RTU_taskLoop(void *pvParameters) {

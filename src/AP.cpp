@@ -31,8 +31,7 @@ void ensureMBMapConfigFile() {
 void printMBMapSummary() {
   ensureMBMapConfigFile();
   Shared_loadMessageConfig();
-  Serial.printf("[MBMAP] Loaded %u message entries from MBmapconf.csv\n",
-                (unsigned)Shared_getLoadedMessageCount());
+  Serial.printf("[MBMAP] Loaded %u message entries from MBmapconf.csv\n",(unsigned)Shared_getLoadedMessageCount());
 }
 
 void printAPStatus() {
