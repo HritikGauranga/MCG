@@ -1,5 +1,4 @@
 #pragma once
-
 void TCP_init();
 void TCP_maintainDHCP();
 void TCP_processNetwork();
