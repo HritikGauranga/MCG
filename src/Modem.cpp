@@ -67,7 +67,7 @@ bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   Shared_writeInputRegister(SIM_STATUS_REGISTER,
-    ready ? (int16_t)STATE_READY : (int16_t)STATUS_ERROR_SIM);
+    ready ? (int16_t)STATE_READY : (int16_t)STATE_UNKNOWN);
   return ready;
 }
 
@@ -82,7 +82,7 @@ bool waitForNetwork() {
     Serial.println("[MODEM] Waiting for network...");
     delay(2000);
   }
-  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATUS_ERROR_NETWORK);
+  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_UNKNOWN);
   Serial.println("[MODEM] Network FAILED");
   return false;
 }
@@ -107,7 +107,7 @@ bool sendSMS(const String &number, const String &message) {
   if (!onNetwork) {
     Serial.println("[SMS] Network lost — marking modem not ready");
     modemReady = false;
-    Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATUS_ERROR_NETWORK);
+    Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_UNKNOWN);
     return false;
   }
 
@@ -402,7 +402,7 @@ bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   Shared_writeInputRegister(SIM_STATUS_REGISTER,
-    ready ? (int16_t)STATE_READY : (int16_t)STATUS_ERROR_SIM);
+    ready ? (int16_t)STATE_READY : (int16_t)STATE_ERROR);
   return ready;
 }
 
@@ -417,7 +417,7 @@ bool waitForNetwork() {
     Serial.println("[MODEM] Waiting for network...");
     delay(2000);
   }
-  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATUS_ERROR_NETWORK);
+  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_ERROR);
   Serial.println("[MODEM] Network FAILED");
   return false;
 }
@@ -442,7 +442,7 @@ bool sendSMS(const String &number, const String &message) {
   if (!onNetwork) {
     Serial.println("[SMS] Network lost — marking modem not ready");
     modemReady = false;
-    Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATUS_ERROR_NETWORK);
+    Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_ERROR);
     return false;
   }
 
@@ -548,8 +548,8 @@ void initModem() {
 
   updateModemState(
     modemReady  ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
-    simOk       ? (int16_t)STATE_READY : (int16_t)STATUS_ERROR_SIM,
-    networkOk   ? (int16_t)STATE_READY : (int16_t)STATUS_ERROR_NETWORK
+    simOk       ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
+    networkOk   ? (int16_t)STATE_READY : (int16_t)STATE_ERROR
   );
 
   Serial.println(modemReady
