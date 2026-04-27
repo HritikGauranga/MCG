@@ -80,11 +80,7 @@ bool   Shared_getMessageConfig(size_t index, MessageConfig &config);
 // Register access
 SystemSnapshot Shared_getSnapshot();
 bool Shared_readTriggerRegister(size_t index, uint16_t &value);
-
-// Write trigger from a specific interface (OR-merge: sets bit if value==1, never clears)
-// clearAll=true is used by syncTo to push the full state back
 bool Shared_writeTriggerRegister(size_t index, uint16_t value);
-
 bool Shared_writeResultRegister(size_t index, int16_t value);
 bool Shared_writeInputRegister(size_t index, int16_t value);
 
@@ -95,9 +91,19 @@ void Shared_setAPModeActive(bool active);
 // Encoding
 uint16_t encodeSignedRegister(int16_t value);
 
-// LastSeen tracking (prevents re-triggering on mirror writes)
-// Call this in syncTo() after mirroring trigger registers
-void Shared_updateLastSeenTriggers();
+// ---------------------------------------------------------------------------
+// LastSeen tracking — prevents re-triggering on mirror writes in syncTo().
+// All get/set functions are mutex-protected internally.
+//
+// IMPORTANT: Call the interface-specific update from each syncTo():
+//   RTU_syncTo()  → Shared_updateRTULastSeenTriggers()
+//   TCP_syncTo()  → Shared_updateTCPLastSeenTriggers()
+//
+// Never call a combined update — it would overwrite the other interface's
+// lastSeen and cause the clobber race described in RTU/TCP comments.
+// ---------------------------------------------------------------------------
+void Shared_updateRTULastSeenTriggers();
+void Shared_updateTCPLastSeenTriggers();
 bool Shared_getRTULastSeenTrigger(size_t index, uint16_t &value);
 bool Shared_getTCPLastSeenTrigger(size_t index, uint16_t &value);
 bool Shared_setRTULastSeenTrigger(size_t index, uint16_t value);

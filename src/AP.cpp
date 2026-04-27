@@ -16,10 +16,10 @@ void ensureMBMapConfigFile() {
     File f = LittleFS.open("/MBmapconf.csv", "w");
     if (f) {
       f.println("Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message");
-      f.println("1, 8149979689, 8655138978, 9030123253, 9123456789, 7448054537, ALARM: Temperature is HIGH!");
-      f.println("2, 8149979689, , 9030123253, 9123456789, 9876543210, ALARM: Pump oil Temperature is HIGH!");
-      f.println("3, 8149979689, , , 9123456789, 9876543210, Return to normal: Temperature is back to normal.");
-      f.println("4, 8149979689, , , , 9876543210, ALARM: Pump oil Temperature is back to normal.");
+      f.println("1, 8149979689, 8655138978, 9030123253, 9111111111, 7111111111, ALARM: Temperature is HIGH!");
+      f.println("2, 8149979689, , 9030123253, 9111111111, 7111111111, ALARM: Pump oil Temperature is HIGH!");
+      f.println("3, 8149979689, , , 9111111111, 7111111111, Return to normal: Temperature is back to normal.");
+      f.println("4, 8149979689, , , , 7111111111, ALARM: Pump oil Temperature is back to normal.");
       f.println("5, 8149979689, , , , , ALARM: Speed is HIGH!");
       f.close();
     }

@@ -1,9 +1,9 @@
 #include "Shared.h"
 #include <LittleFS.h>
 
-const int BUTTON_PIN  = 33;
-const int MODEM_RX    = 16;
-const int MODEM_TX    = 17;
+const int BUTTON_PIN   = 33;
+const int MODEM_RX     = 16;
+const int MODEM_TX     = 17;
 const int MODEM_PWRKEY = 32;
 
 const unsigned long DHCP_RENEW_MS      = 60000;
@@ -12,10 +12,10 @@ const unsigned long BUTTON_DEBOUNCE_MS = 100;
 SemaphoreHandle_t stateMutex      = nullptr;
 SemaphoreHandle_t filesystemMutex = nullptr;
 
-static bool     apModeActive  = false;
-static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]   = {};
-static int16_t  resultRegs[MESSAGE_SLOT_COUNT]    = {};
-static int16_t  inputRegs[INPUT_REGISTER_COUNT]   = {
+static bool     apModeActive = false;
+static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {};
+static int16_t  resultRegs[MESSAGE_SLOT_COUNT]   = {};
+static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
   (int16_t)STATE_READY,
   (int16_t)STATE_UNKNOWN,
   (int16_t)STATE_UNKNOWN,
@@ -25,47 +25,59 @@ static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;
 
 // ---------------------------------------------------------------------------
-// LastSeen tracking (prevents re-triggering when RTU/TCP mirror each other)
+// LastSeen tracking — both arrays are guarded by stateMutex.
+// RTU and TCP tasks read/write these via the get/set helpers below.
+// Shared_updateLastSeenTriggers() is called from syncTo() after mirroring
+// so that neither interface mistakes its own mirror as a new master write.
 // ---------------------------------------------------------------------------
 static uint16_t rtuLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
 static uint16_t tcpLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
 
-void Shared_updateLastSeenTriggers() {
+void Shared_updateRTULastSeenTriggers() {
   if (!Shared_lockState(pdMS_TO_TICKS(50))) return;
-  
-  // After mirroring, update both lastSeen arrays to match current shared state
-  // This prevents syncFrom() from re-reading our own mirror as a new master write
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     rtuLastSeenTriggers[i] = triggerRegs[i];
-    tcpLastSeenTriggers[i] = triggerRegs[i];
   }
-  
   Shared_unlockState();
 }
 
-// Getters for RTU and TCP to use in syncFrom()
+void Shared_updateTCPLastSeenTriggers() {
+  if (!Shared_lockState(pdMS_TO_TICKS(50))) return;
+  for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    tcpLastSeenTriggers[i] = triggerRegs[i];
+  }
+  Shared_unlockState();
+}
+
 bool Shared_getRTULastSeenTrigger(size_t index, uint16_t &value) {
   if (index >= MESSAGE_SLOT_COUNT) return false;
+  if (!Shared_lockState()) return false;
   value = rtuLastSeenTriggers[index];
+  Shared_unlockState();
   return true;
 }
 
 bool Shared_getTCPLastSeenTrigger(size_t index, uint16_t &value) {
   if (index >= MESSAGE_SLOT_COUNT) return false;
+  if (!Shared_lockState()) return false;
   value = tcpLastSeenTriggers[index];
+  Shared_unlockState();
   return true;
 }
 
-// Setters for RTU and TCP to update after reading
 bool Shared_setRTULastSeenTrigger(size_t index, uint16_t value) {
   if (index >= MESSAGE_SLOT_COUNT) return false;
+  if (!Shared_lockState()) return false;
   rtuLastSeenTriggers[index] = value;
+  Shared_unlockState();
   return true;
 }
 
 bool Shared_setTCPLastSeenTrigger(size_t index, uint16_t value) {
   if (index >= MESSAGE_SLOT_COUNT) return false;
+  if (!Shared_lockState()) return false;
   tcpLastSeenTriggers[index] = value;
+  Shared_unlockState();
   return true;
 }
 
@@ -86,9 +98,7 @@ static bool parseMessageLine(const String &line, MessageConfig &config) {
   int found = 0;
 
   for (int i = 0; i < (int)line.length() && found < 6; ++i) {
-    if (line.charAt(i) == ',') {
-      commas[found++] = i;
-    }
+    if (line.charAt(i) == ',') commas[found++] = i;
   }
 
   if (found < 6) return false;
@@ -124,12 +134,8 @@ static void clearMessageConfig() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 void Shared_init() {
-  if (stateMutex == nullptr) {
-    stateMutex = xSemaphoreCreateMutex();
-  }
-  if (filesystemMutex == nullptr) {
-    filesystemMutex = xSemaphoreCreateMutex();
-  }
+  if (stateMutex == nullptr)      stateMutex      = xSemaphoreCreateMutex();
+  if (filesystemMutex == nullptr) filesystemMutex = xSemaphoreCreateMutex();
 }
 
 // ---------------------------------------------------------------------------
@@ -171,16 +177,13 @@ bool Shared_loadMessageConfig() {
     return false;
   }
 
-  // Skip header
-  if (f.available()) f.readStringUntil('\n');
+  if (f.available()) f.readStringUntil('\n'); // skip header
 
   while (f.available()) {
     String line = Shared_trimCopy(f.readStringUntil('\n'));
     if (line.length() == 0) continue;
-
     MessageConfig config = {};
     if (!parseMessageLine(line, config)) continue;
-
     size_t slot = (size_t)(config.msgNo - 1);
     parsedConfigs[slot] = config;
     parsedCount++;
@@ -190,7 +193,6 @@ bool Shared_loadMessageConfig() {
   Shared_unlockFileSystem();
 
   if (!Shared_lockState(pdMS_TO_TICKS(2000))) return false;
-
   memset(messageConfigs, 0, sizeof(messageConfigs));
   memcpy(messageConfigs, parsedConfigs, sizeof(parsedConfigs));
   loadedMessageCount = parsedCount;
@@ -200,7 +202,6 @@ bool Shared_loadMessageConfig() {
 
 size_t Shared_getLoadedMessageCount() {
   size_t count = 0;
-  // Always use the mutex — never fall back to a bare read on a multi-core MCU
   if (Shared_lockState(pdMS_TO_TICKS(100))) {
     count = loadedMessageCount;
     Shared_unlockState();

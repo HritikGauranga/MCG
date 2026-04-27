@@ -11,21 +11,17 @@
 #include "TCP.h"
 
 namespace {
-  constexpr uint32_t RTU_TASK_STACK        = 4096;
-  constexpr uint32_t TCP_TASK_STACK        = 6144;
-  constexpr uint32_t MODEM_TASK_STACK      = 8192;
-  constexpr uint32_t MODEM_INIT_TASK_STACK = 4096;
-  constexpr uint32_t AP_TASK_STACK         = 4096;
+  constexpr uint32_t RTU_TASK_STACK   = 4096;
+  constexpr uint32_t TCP_TASK_STACK   = 6144;
+  constexpr uint32_t MODEM_TASK_STACK = 8192;
+  constexpr uint32_t AP_TASK_STACK    = 4096;
 }
-
-// Declared in Modem_B.cpp
-extern void Modem_initTask(void *pvParameters);
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  Serial.println("\n=== MB Map RTOS SMS Controller (Option B — background init) ===");
+  Serial.println("\n=== MB Map RTOS SMS Controller ===");
 
   Shared_init();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -52,29 +48,23 @@ void setup() {
   }
 
   // ---------------------------------------------------------------------------
-  // Task layout:
-  //   Core 0: ModemInit (priority 4, one-shot — deletes itself after init)
-  //           SmsTask   (priority 2 — blocks on semaphore until init done)
-  //   Core 1: RTUTask   (priority 3)
-  //           TCPTask   (priority 2)
-  //           ApTask    (priority 1)
+  // Task layout — 4 tasks total:
   //
-  // ModemInit runs at priority 4 so it isn't preempted during the critical
-  // AT command sequence. SmsTask starts immediately but blocks on the binary
-  // semaphore released by ModemInit, so no SMS jobs are processed until
-  // the modem is ready.
+  //   Core 0: SmsTask  (priority 2)
+  //     Calls initModem() at startup (~15s), then scans edges and sends SMS.
+  //     Core 1 runs freely during modem init — no blocking effect on Modbus.
+  //
+  //   Core 1: RTUTask  (priority 3) — Modbus RTU, highest prio on core 1
+  //           TCPTask  (priority 2) — Modbus TCP
+  //           ApTask   (priority 1) — Wi-Fi AP config server, lowest prio
   // ---------------------------------------------------------------------------
 
-  // Create ModemInit BEFORE SmsTask so the semaphore is given before
-  // SmsTask could theoretically time out (it uses portMAX_DELAY so it won't,
-  // but ordering is cleaner).
-  xTaskCreatePinnedToCore(Modem_initTask, "ModemInit", MODEM_INIT_TASK_STACK, nullptr, 4, nullptr, 0);
-  xTaskCreatePinnedToCore(Modem_task,     "SmsTask",   MODEM_TASK_STACK,      nullptr, 2, nullptr, 0);
-  xTaskCreatePinnedToCore(RTU_taskLoop,   "RTUTask",   RTU_TASK_STACK,        nullptr, 3, nullptr, 1);
-  xTaskCreatePinnedToCore(TCP_taskLoop,   "TCPTask",   TCP_TASK_STACK,        nullptr, 2, nullptr, 1);
-  xTaskCreatePinnedToCore(AP_taskLoop,    "ApTask",    AP_TASK_STACK,         nullptr, 1, nullptr, 1);
+  xTaskCreatePinnedToCore(Modem_task,   "SmsTask",  MODEM_TASK_STACK, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(RTU_taskLoop, "RTUTask",  RTU_TASK_STACK,   nullptr, 3, nullptr, 1);
+  xTaskCreatePinnedToCore(TCP_taskLoop, "TCPTask",  TCP_TASK_STACK,   nullptr, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(AP_taskLoop,  "ApTask",   AP_TASK_STACK,    nullptr, 1, nullptr, 1);
 
-  Serial.println("[SYSTEM] Tasks started: ModemInit, SmsTask, RTUTask, TCPTask, ApTask");
+  Serial.println("[SYSTEM] Tasks started: SmsTask, RTUTask, TCPTask, ApTask");
 }
 
 void loop() {
