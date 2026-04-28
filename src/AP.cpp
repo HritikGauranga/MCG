@@ -8,6 +8,68 @@ static AsyncWebServer server(80);
 static File           uploadFile;
 static bool           serverStarted     = false;
 static bool           serverRoutesSetup = false;
+static const char    *WEBUI_USER        = "admin";
+static const char    *WEBUI_PASS        = "admin123";
+static const char    *AUTH_COOKIE_NAME  = "MSMSG_AUTH";
+static const char    *AUTH_COOKIE_VALUE = "ok";
+
+static bool isAuthenticated(AsyncWebServerRequest *request) {
+  if (!request->hasHeader("Cookie")) return false;
+  String cookie = request->getHeader("Cookie")->value();
+  String token  = String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE;
+  return cookie.indexOf(token) >= 0;
+}
+
+static void sendRedirect(AsyncWebServerRequest *request, const char *location) {
+  AsyncWebServerResponse *res = request->beginResponse(302);
+  res->addHeader("Location", location);
+  request->send(res);
+}
+
+static void clearAuthCookie(AsyncWebServerRequest *request) {
+  AsyncWebServerResponse *res = request->beginResponse(302);
+  res->addHeader("Location", "/login");
+  res->addHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=; Path=/; Max-Age=0");
+  request->send(res);
+}
+
+static String loginPage(bool badCredentials = false) {
+  String err = badCredentials ? "<div class='err'>Invalid ID or password.</div>" : "";
+  String page = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef2f7; font-family: Arial, sans-serif; }
+  .panel { width: min(360px, 92vw); background: #fff; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); padding: 24px; }
+  h1 { margin: 0 0 14px; font-size: 20px; color: #1a1a2e; }
+  label { display: block; font-size: 13px; color: #444; margin: 10px 0 6px; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid #d9dce2; border-radius: 8px; font-size: 14px; }
+  button { width: 100%; margin-top: 16px; padding: 10px 12px; border: 0; border-radius: 8px; background: #1565c0; color: #fff; font-weight: 600; cursor: pointer; }
+  button:hover { opacity: 0.9; }
+  .err { margin: 8px 0 6px; padding: 10px; border-radius: 8px; background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; font-size: 13px; }
+</style>
+</head>
+<body>
+  <form class="panel" method="POST" action="/login" autocomplete="off">
+    <h1>MB Map Config Login</h1>
+    __ERROR_BLOCK__
+    <label for="user">ID</label>
+    <input id="user" name="user" type="text" required>
+    <label for="pass">Password</label>
+    <input id="pass" name="pass" type="password" required>
+    <button type="submit">Login</button>
+  </form>
+</body>
+</html>
+)rawliteral";
+  page.replace("__ERROR_BLOCK__", err);
+  return page;
+}
 
 void ensureMBMapConfigFile() {
   if (!Shared_lockFileSystem()) return;
@@ -84,11 +146,49 @@ static String buildConfigTableJSON() {
 void setupWebServerRoutes() {
   if (serverRoutesSetup) return;
 
+  server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (isAuthenticated(request)) {
+      sendRedirect(request, "/");
+      return;
+    }
+    bool bad = request->hasParam("err");
+    request->send(200, "text/html", loginPage(bad));
+  });
+
+  server.on("/login", HTTP_POST, [](AsyncWebServerRequest *request) {
+    String user = request->hasParam("user", true) ? request->getParam("user", true)->value() : "";
+    String pass = request->hasParam("pass", true) ? request->getParam("pass", true)->value() : "";
+
+    if (user == WEBUI_USER && pass == WEBUI_PASS) {
+      AsyncWebServerResponse *res = request->beginResponse(302);
+      res->addHeader("Location", "/");
+      res->addHeader("Set-Cookie",
+                     String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE +
+                     "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax");
+      request->send(res);
+      return;
+    }
+
+    sendRedirect(request, "/login?err=1");
+  });
+
+  server.on("/logout", HTTP_GET, [](AsyncWebServerRequest *request) {
+    clearAuthCookie(request);
+  });
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      sendRedirect(request, "/login");
+      return;
+    }
     request->send(200, "text/html", htmlPage());
   });
 
   server.on("/api/download-csv/mbmapconf", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "text/plain", "Unauthorized");
+      return;
+    }
     if (!Shared_lockFileSystem()) {
       request->send(503, "text/plain", "File system busy");
       return;
@@ -109,6 +209,10 @@ void setupWebServerRoutes() {
     [](AsyncWebServerRequest *request) {},
     [](AsyncWebServerRequest *request, String filename, size_t index,
        uint8_t *data, size_t len, bool final) {
+      if (!isAuthenticated(request)) {
+        if (!index) request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+        return;
+      }
       (void)filename;
 
       if (!index) {
@@ -145,6 +249,10 @@ void setupWebServerRoutes() {
     });
 
   server.on("/api/delete-csv/mbmapconf", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
     if (!Shared_lockFileSystem()) {
       request->send(503, "application/json", "{\"error\":\"File system busy\"}");
       return;
@@ -160,6 +268,10 @@ void setupWebServerRoutes() {
 
   // Returns current loaded config as JSON table rows
   server.on("/api/config-table", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
     String body = "{\"loaded\":" +
                   String((unsigned)Shared_getLoadedMessageCount()) +
                   ",\"rows\":" + buildConfigTableJSON() + "}";
@@ -289,6 +401,7 @@ String htmlPage() {
     <button class="primary"  onclick="document.getElementById('file').click()">&#8593; Upload CSV</button>
     <button class="primary"  onclick="downloadCSV()">&#8595; Download CSV</button>
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
+    <button class="danger"   onclick="logout()">Logout</button>
   </div>
 
   <div id="status" class="status"></div>
@@ -413,6 +526,10 @@ function deleteConfig() {
       }
     })
     .catch(function(err) { setStatus('Delete failed: ' + err.message, 'err'); });
+}
+
+function logout() {
+  window.location.href = '/logout';
 }
 
 // Load table on page open
