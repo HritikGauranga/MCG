@@ -5,9 +5,9 @@
 #include <WiFi.h>
 
 static AsyncWebServer server(80);
-static File           uploadFile;
-static bool           serverStarted    = false;
-static bool           serverRoutesSetup = false;
+static File uploadFile;
+static bool serverStarted    = false;
+static bool serverRoutesSetup = false;
 
 void ensureMBMapConfigFile() {
   if (!Shared_lockFileSystem()) return;

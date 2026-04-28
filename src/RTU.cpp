@@ -29,7 +29,7 @@ void RTU_process() {
 void RTU_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t rtuVal  = mbRTU.Hreg(TRIGGER_REGISTER_START + i);
-    uint16_t lastSeen = 0;
+    uint16_t lastSeen = 0;  
     Shared_getRTULastSeenTrigger(i, lastSeen);
 
     if (rtuVal != lastSeen) {

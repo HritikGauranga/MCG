@@ -9,11 +9,11 @@ const int MODEM_PWRKEY = 32;
 const unsigned long DHCP_RENEW_MS      = 60000;
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
-SemaphoreHandle_t stateMutex      = nullptr;
-SemaphoreHandle_t filesystemMutex = nullptr;
+SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
+SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload. Not needed for read-only access from RTU/TCP tasks since they never touch the filesystem directly.
 
 static bool     apModeActive = false;
-static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {};
+static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; // 
 static int16_t  resultRegs[MESSAGE_SLOT_COUNT]   = {};
 static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
   (int16_t)STATE_READY,
@@ -33,12 +33,12 @@ static size_t loadedMessageCount = 0;
 static uint16_t rtuLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
 static uint16_t tcpLastSeenTriggers[MESSAGE_SLOT_COUNT] = {};
 
-void Shared_updateRTULastSeenTriggers() {
+void Shared_updateRTULastSeenTriggers() { 
   if (!Shared_lockState(pdMS_TO_TICKS(50))) return;
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     rtuLastSeenTriggers[i] = triggerRegs[i];
   }
-  Shared_unlockState();
+  Shared_unlockState(); 
 }
 
 void Shared_updateTCPLastSeenTriggers() {
@@ -77,7 +77,7 @@ bool Shared_setTCPLastSeenTrigger(size_t index, uint16_t value) {
   if (index >= MESSAGE_SLOT_COUNT) return false;
   if (!Shared_lockState()) return false;
   tcpLastSeenTriggers[index] = value;
-  Shared_unlockState();
+  Shared_unlockState(); 
   return true;
 }
 
@@ -90,9 +90,9 @@ String Shared_trimCopy(const String &value) {
   return copy;
 }
 
-// ---------------------------------------------------------------------------
+
 // CSV parser
-// ---------------------------------------------------------------------------
+
 static bool parseMessageLine(const String &line, MessageConfig &config) {
   int commas[6] = {-1, -1, -1, -1, -1, -1};
   int found = 0;
@@ -130,17 +130,15 @@ static void clearMessageConfig() {
   loadedMessageCount = 0;
 }
 
-// ---------------------------------------------------------------------------
+
 // Lifecycle
-// ---------------------------------------------------------------------------
 void Shared_init() {
   if (stateMutex == nullptr)      stateMutex      = xSemaphoreCreateMutex();
   if (filesystemMutex == nullptr) filesystemMutex = xSemaphoreCreateMutex();
 }
 
-// ---------------------------------------------------------------------------
+
 // Mutex helpers
-// ---------------------------------------------------------------------------
 bool Shared_lockState(TickType_t timeout) {
   return stateMutex != nullptr && xSemaphoreTake(stateMutex, timeout) == pdTRUE;
 }
@@ -157,9 +155,8 @@ void Shared_unlockFileSystem() {
   if (filesystemMutex != nullptr) xSemaphoreGive(filesystemMutex);
 }
 
-// ---------------------------------------------------------------------------
+
 // Config load
-// ---------------------------------------------------------------------------
 bool Shared_loadMessageConfig() {
   static MessageConfig parsedConfigs[MESSAGE_SLOT_COUNT];
   size_t parsedCount = 0;
@@ -217,9 +214,9 @@ bool Shared_getMessageConfig(size_t index, MessageConfig &config) {
   return config.valid;
 }
 
-// ---------------------------------------------------------------------------
+
 // Snapshot & register access
-// ---------------------------------------------------------------------------
+
 SystemSnapshot Shared_getSnapshot() {
   SystemSnapshot snapshot = {};
   if (!Shared_lockState()) return snapshot;

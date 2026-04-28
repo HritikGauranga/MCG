@@ -59,13 +59,14 @@ void setup() {
   //           ApTask   (priority 1) — Wi-Fi AP config server, lowest prio
   // ---------------------------------------------------------------------------
 
-  xTaskCreatePinnedToCore(Modem_task,   "SmsTask",  MODEM_TASK_STACK, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(Modem_task,   "SmsTask",  MODEM_TASK_STACK, nullptr, 2, nullptr, 0); 
   xTaskCreatePinnedToCore(RTU_taskLoop, "RTUTask",  RTU_TASK_STACK,   nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(TCP_taskLoop, "TCPTask",  TCP_TASK_STACK,   nullptr, 2, nullptr, 1);
   xTaskCreatePinnedToCore(AP_taskLoop,  "ApTask",   AP_TASK_STACK,    nullptr, 1, nullptr, 1);
 
   Serial.println("[SYSTEM] Tasks started: SmsTask, RTUTask, TCPTask, ApTask");
 }
+
 
 void loop() {
   vTaskDelay(pdMS_TO_TICKS(1000));
