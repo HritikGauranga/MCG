@@ -1607,6 +1607,37 @@ void setupWebServerRoutes() {
     request->send(200, "application/json", "{\"success\":true}");
   });
 
+  server.on("/api/dashboard", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
+
+    GatewaySettings s = {};
+    if (!Shared_getGatewaySettings(s)) {
+      request->send(500, "application/json", "{\"error\":\"Read failed\"}");
+      return;
+    }
+
+    String serial = readSerialNumber();
+    if (serial.length() == 0) serial = "Not Set";
+
+    String body = "{";
+    body += "\"serial_number\":\"" + serial + "\",";
+    body += "\"use_dhcp\":" + String(s.useDhcp ? "true" : "false") + ",";
+    body += "\"static_ip\":\"" + ipBytesToString(s.staticIp) + "\",";
+    body += "\"subnet_mask\":\"" + ipBytesToString(s.subnetMask) + "\",";
+    body += "\"gateway_ip\":\"" + ipBytesToString(s.gatewayIp) + "\",";
+    body += "\"tcp_port\":" + String(s.tcpPort) + ",";
+    body += "\"slave_id\":" + String(s.slaveId) + ",";
+    body += "\"baud_rate\":" + String((unsigned long)s.baudRate) + ",";
+    body += "\"data_bits\":" + String(s.dataBits) + ",";
+    body += "\"parity\":\"" + String(s.parity) + "\",";
+    body += "\"stop_bits\":" + String(s.stopBits);
+    body += "}";
+    request->send(200, "application/json", body);
+  });
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (!isAuthenticated(request)) {
       sendRedirect(request, "/login");
@@ -1804,6 +1835,10 @@ String htmlPage() {
   .section-title { font-size: 15px; font-weight: 700; color: #333;
                    margin: 0 0 10px 0; padding-bottom: 6px;
                    border-bottom: 2px solid #e0e0e0; }
+  .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 18px; }
+  .dash-item { background: #f8fbff; border: 1px solid #dce8f8; border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .dash-label { display: block; font-size: 12px; color: #5f6c80; margin-bottom: 4px; }
+  .dash-value { font-size: 14px; color: #1f2d3d; font-weight: 600; word-break: break-word; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   thead tr { background: #1565c0; color: white; }
@@ -1821,7 +1856,13 @@ String htmlPage() {
   .count-badge { display: inline-block; background: #e8f0fe; color: #1565c0;
                  border-radius: 20px; padding: 2px 12px; font-size: 13px;
                  font-weight: 600; margin-left: 8px; }
+  .dashboard-actions { margin: 2px 0 18px; }
   #file { display: none; }
+  @media (max-width: 700px) {
+    body { padding: 12px; }
+    .card { padding: 14px; }
+    .dashboard-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -1832,11 +1873,28 @@ String htmlPage() {
     <button class="primary"  onclick="document.getElementById('file').click()">&#8593; Upload CSV</button>
     <button class="primary"  onclick="downloadCSV()">&#8595; Download CSV</button>
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
-    <button class="primary"  onclick="openGatewayConfig()">Gateway Settings</button>
     <button class="danger"   onclick="logout()">Logout</button>
   </div>
 
   <div id="status" class="status"></div>
+
+  <div class="section-title">Dashboard</div>
+  <div id="dashboard" class="dashboard-grid">
+    <div class="dash-item"><span class="dash-label">Serial Number</span><span id="dash-serial" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">DHCP Mode</span><span id="dash-dhcp" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Static IP</span><span id="dash-static-ip" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Subnet Mask</span><span id="dash-subnet" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Gateway IP</span><span id="dash-gateway-ip" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">TCP Port</span><span id="dash-tcp-port" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">RTU Slave ID</span><span id="dash-slave-id" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">RTU Baud Rate</span><span id="dash-baud" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Data Bits</span><span id="dash-data-bits" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Parity</span><span id="dash-parity" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Stop Bits</span><span id="dash-stop-bits" class="dash-value">Loading...</span></div>
+  </div>
+  <div class="dashboard-actions">
+    <button class="primary" onclick="openGatewayConfig()">Gateway Settings</button>
+  </div>
 
   <div class="section-title">
     Loaded Entries
@@ -1875,6 +1933,33 @@ function setStatus(msg, type) {
 function clearStatus() {
   var el = document.getElementById('status');
   el.className = 'status';
+}
+
+function setDash(id, value) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value;
+}
+
+function loadDashboard() {
+  fetch('/api/dashboard')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      setDash('dash-serial', d.serial_number || 'Not Set');
+      setDash('dash-dhcp', d.use_dhcp ? 'Enabled' : 'Disabled');
+      setDash('dash-static-ip', d.static_ip || '-');
+      setDash('dash-subnet', d.subnet_mask || '-');
+      setDash('dash-gateway-ip', d.gateway_ip || '-');
+      setDash('dash-tcp-port', String(d.tcp_port || '-'));
+      setDash('dash-slave-id', String(d.slave_id || '-'));
+      setDash('dash-baud', String(d.baud_rate || '-'));
+      setDash('dash-data-bits', String(d.data_bits || '-'));
+      setDash('dash-parity', d.parity || '-');
+      setDash('dash-stop-bits', String(d.stop_bits || '-'));
+    })
+    .catch(function(err) {
+      setStatus('Failed to load dashboard: ' + err.message, 'err');
+    });
 }
 
 function phone(num) {
@@ -1969,6 +2054,7 @@ function openGatewayConfig() {
 }
 
 // Load table on page open
+loadDashboard();
 loadTable();
 </script>
 </body>
