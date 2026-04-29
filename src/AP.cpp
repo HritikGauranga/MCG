@@ -1835,6 +1835,10 @@ String htmlPage() {
   .section-title { font-size: 15px; font-weight: 700; color: #333;
                    margin: 0 0 10px 0; padding-bottom: 6px;
                    border-bottom: 2px solid #e0e0e0; }
+  .note { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px;
+          background: #fff8e1; border: 1px solid #ffe082; color: #6d4c41;
+          font-size: 13px; }
+  .note.hidden { display: none; }
   .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 18px; }
   .dash-item { background: #f8fbff; border: 1px solid #dce8f8; border-radius: 8px; padding: 10px 12px; min-width: 0; }
   .dash-label { display: block; font-size: 12px; color: #5f6c80; margin-bottom: 4px; }
@@ -1900,6 +1904,7 @@ String htmlPage() {
     Loaded Entries
     <span id="count-badge" class="count-badge">0</span>
   </div>
+  <p id="upload-note" class="note hidden"><strong>Note:</strong> CSV uploaded successfully. Please verify all phone numbers in <strong>Loaded Entries</strong>. Invalid or non-existent numbers can cause SMS send failures.</p>
 
   <div class="table-wrap">
     <table>
@@ -1933,6 +1938,12 @@ function setStatus(msg, type) {
 function clearStatus() {
   var el = document.getElementById('status');
   el.className = 'status';
+}
+
+function showUploadNote(show) {
+  var el = document.getElementById('upload-note');
+  if (!el) return;
+  el.className = show ? 'note' : 'note hidden';
 }
 
 function setDash(id, value) {
@@ -2018,12 +2029,17 @@ function uploadFile() {
     .then(function(data) {
       if (data.success) {
         setStatus('Upload successful — ' + data.loaded + ' entries loaded.', 'ok');
+        showUploadNote(true);
         renderTable(data.rows);  // instant table update from upload response
       } else {
+        showUploadNote(false);
         setStatus('Upload failed: ' + (data.error || 'unknown error'), 'err');
       }
     })
-    .catch(function(err) { setStatus('Upload failed: ' + err.message, 'err'); });
+    .catch(function(err) {
+      showUploadNote(false);
+      setStatus('Upload failed: ' + err.message, 'err');
+    });
 
   // Reset file input so the same file can be re-uploaded if needed
   document.getElementById('file').value = '';
