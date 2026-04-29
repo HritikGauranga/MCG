@@ -1747,20 +1747,13 @@ void startAPMode() {
   if (Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Starting Access Point...");
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
   delay(50);
   WiFi.softAP("ESP32_FileServer", "12345678");
   delay(200);
 
   Serial.print("[AP] AP IP address: ");
   Serial.println(WiFi.softAPIP());
-
-  setupWebServerRoutes();
-
-  if (!serverStarted) {
-    server.begin();
-    serverStarted = true;
-  }
 
   Shared_setAPModeActive(true);
   Serial.println("[AP] Access Point is now active");
@@ -1771,14 +1764,9 @@ void stopAPMode() {
 
   Serial.println("[AP] Stopping Access Point...");
   WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_OFF);
+  // Keep STA mode alive so Web UI on Ethernet remains available.
+  WiFi.mode(WIFI_STA);
   delay(100);
-
-  if (serverStarted) {
-    server.end();
-    serverStarted     = false;
-    serverRoutesSetup = false;
-  }
 
   Shared_setAPModeActive(false);
   Serial.println("[AP] Access Point is now disabled");
@@ -1787,6 +1775,18 @@ void stopAPMode() {
 void AP_taskLoop(void *pvParameters) {
   (void)pvParameters;
   static unsigned long lastStateChange = 0;
+
+  // Bring up base Wi-Fi stack without connecting, required by Async web stack.
+  WiFi.mode(WIFI_STA);
+  delay(50);
+
+  // Keep Web UI always active (Ethernet IP + AP IP when AP mode is enabled).
+  setupWebServerRoutes();
+  if (!serverStarted) {
+    server.begin();
+    serverStarted = true;
+    Serial.println("[WEB] Config server started on port 80 (always active)");
+  }
 
   for (;;) {
     bool switchState  = digitalRead(BUTTON_PIN);

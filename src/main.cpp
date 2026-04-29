@@ -37,7 +37,8 @@ void setup() {
   printMBMapSummary();
   printAPStatus();
 
-  WiFi.mode(WIFI_OFF);
+  // Keep lwIP active for always-on Web UI; AP task switches to AP_STA when needed.
+  WiFi.mode(WIFI_STA);
   delay(100);
 
   RTU_init();

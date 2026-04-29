@@ -1,51 +1,92 @@
 #include "TCP.h"
 #include "Shared.h"
 #include <SPI.h>
-#include <Ethernet.h>
+#include <ETH.h>
+#include <WiFi.h>
 #include <ArduinoModbus.h>
 
-static byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xEE};
-static EthernetServer *ethServer = nullptr;
+static WiFiServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
-static EthernetClient  activeClient;
+static WiFiClient      activeClient;
 static bool            clientActive  = false;
-static unsigned long   lastDHCPCheck = 0;
+
+// W5500 SPI pin map (matches existing wiring in this project)
+static const int ETH_SPI_SCK  = 18;
+static const int ETH_SPI_MISO = 19;
+static const int ETH_SPI_MOSI = 23;
+static const int ETH_PHY_CS   = 5;
+static const int ETH_PHY_IRQ  = -1; // Not connected on current hardware
+static const int ETH_PHY_RST  = 14;
+static const int ETH_W5500_ADDR = 1;
+
+static bool ethInitialized = false;
+static bool isValidIP(const IPAddress &ip) {
+  return !(ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0);
+}
 
 void TCP_init() {
   GatewaySettings settings = {};
   Shared_getGatewaySettings(settings);
-  const int W5500_RST = 14;
-  pinMode(W5500_RST, OUTPUT);
-  digitalWrite(W5500_RST, LOW);
-  delay(100);
-  digitalWrite(W5500_RST, HIGH);
-  delay(200);
 
-  SPI.begin(18, 19, 23, 5);
-  Ethernet.init(5);
+  SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
 
   Serial.println("[ETH] Starting Ethernet...");
-  bool dhcpOk = false;
-  if (settings.useDhcp) {
-    dhcpOk = (Ethernet.begin(mac) != 0);
+
+  // Use ESP32 lwIP Ethernet driver for W5500 so Web UI and TCP share one stack.
+  if (!ETH.begin(ETH_PHY_W5500, ETH_W5500_ADDR, ETH_PHY_CS, ETH_PHY_IRQ, ETH_PHY_RST, SPI)) {
+    Serial.println("[ETH] ERROR: ETH.begin failed");
+  } else {
+    ethInitialized = true;
   }
-  if (!settings.useDhcp || !dhcpOk || Ethernet.gatewayIP() == IPAddress(0, 0, 0, 0)) {
+
+  if (ethInitialized && settings.useDhcp) {
+    Serial.println("[ETH] DHCP mode");
+    const unsigned long start = millis();
+    while (millis() - start < 8000) {
+      if (ETH.linkUp() && isValidIP(ETH.localIP())) break;
+      delay(100);
+    }
+
+    if (!isValidIP(ETH.localIP())) {
+      Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
+      IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
+      IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
+      IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
+      bool cfgOk = ETH.config(ip, gw, sn, gw, gw);
+      if (!cfgOk) {
+        Serial.println("[ETH] WARNING: static fallback config failed");
+      } else {
+        const unsigned long fallbackStart = millis();
+        while (millis() - fallbackStart < 3000) {
+          if (isValidIP(ETH.localIP())) break;
+          delay(100);
+        }
+      }
+    }
+  } else if (ethInitialized) {
     Serial.println("[ETH] Using static IP");
     IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
     IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
     IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
-    Ethernet.begin(mac, ip, gw, gw, sn);
-  } else {
-    Serial.println("[ETH] DHCP OK");
+    bool cfgOk = ETH.config(ip, gw, sn, gw, gw);
+    if (!cfgOk) {
+      Serial.println("[ETH] WARNING: static IP config failed");
+    } else {
+      const unsigned long start = millis();
+      while (millis() - start < 3000) {
+        if (isValidIP(ETH.localIP())) break;
+        delay(100);
+      }
+    }
   }
 
-  Serial.print("[ETH] IP: ");      Serial.println(Ethernet.localIP());
-  Serial.print("[ETH] Subnet: ");  Serial.println(Ethernet.subnetMask());
-  Serial.print("[ETH] Gateway: "); Serial.println(Ethernet.gatewayIP());
+  Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+  Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+  Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
   Serial.print("[ETH] Modbus TCP Port: ");
   Serial.println(settings.tcpPort);
 
-  static EthernetServer serverInstance(settings.tcpPort);
+  static WiFiServer serverInstance(settings.tcpPort);
   ethServer = &serverInstance;
   ethServer->begin();
   modbusTCPServer.begin();
@@ -56,10 +97,7 @@ void TCP_init() {
 }
 
 void TCP_maintainDHCP() {
-  unsigned long now = millis();
-  if (now - lastDHCPCheck < DHCP_RENEW_MS) return;
-  lastDHCPCheck = now;
-  Ethernet.maintain();
+  // DHCP renew is handled by lwIP ETH driver internally.
 }
 
 void TCP_processNetwork() {
@@ -75,7 +113,7 @@ void TCP_processNetwork() {
     return;
   }
 
-  EthernetClient newClient = ethServer->available();
+  WiFiClient newClient = ethServer->available();
   if (newClient) {
     activeClient = newClient;
     modbusTCPServer.accept(activeClient);
