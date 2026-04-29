@@ -23,6 +23,18 @@ static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
 };
 static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;
+static GatewaySettings gatewaySettings = {
+  true,            // useDhcp
+  {192,168,8,200}, // staticIp
+  {255,255,255,0}, // subnet
+  {192,168,8,1},   // gateway
+  502,             // tcpPort
+  1,               // slaveId
+  9600,            // baudRate
+  8,               // dataBits
+  'N',             // parity
+  1                // stopBits
+};
 
 // ---------------------------------------------------------------------------
 // LastSeen tracking — both arrays are guarded by stateMutex.
@@ -128,6 +140,34 @@ static bool parseMessageLine(const String &line, MessageConfig &config) {
 static void clearMessageConfig() {
   memset(messageConfigs, 0, sizeof(messageConfigs));
   loadedMessageCount = 0;
+}
+
+static bool parseIPv4(const String &src, uint8_t out[4]) {
+  int parts[4] = {0, 0, 0, 0};
+  int p = 0;
+  String token = "";
+  for (size_t i = 0; i < src.length(); ++i) {
+    char c = src.charAt(i);
+    if (c == '.') {
+      if (p > 2 || token.length() == 0) return false;
+      parts[p++] = token.toInt();
+      token = "";
+      continue;
+    }
+    if (c < '0' || c > '9') return false;
+    token += c;
+  }
+  if (p != 3 || token.length() == 0) return false;
+  parts[3] = token.toInt();
+  for (int i = 0; i < 4; ++i) {
+    if (parts[i] < 0 || parts[i] > 255) return false;
+    out[i] = (uint8_t)parts[i];
+  }
+  return true;
+}
+
+static String ipToString(const uint8_t ip[4]) {
+  return String(ip[0]) + "." + String(ip[1]) + "." + String(ip[2]) + "." + String(ip[3]);
 }
 
 
@@ -274,4 +314,77 @@ void Shared_setAPModeActive(bool active) {
 
 uint16_t encodeSignedRegister(int16_t value) {
   return static_cast<uint16_t>(value);
+}
+
+bool Shared_loadGatewaySettings() {
+  GatewaySettings loaded = gatewaySettings;
+  bool found = false;
+
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(1000))) return false;
+  File f = LittleFS.open("/gateway.conf", "r");
+  if (f) {
+    found = true;
+    while (f.available()) {
+      String line = Shared_trimCopy(f.readStringUntil('\n'));
+      if (line.length() == 0) continue;
+      int eq = line.indexOf('=');
+      if (eq <= 0) continue;
+      String key = Shared_trimCopy(line.substring(0, eq));
+      String val = Shared_trimCopy(line.substring(eq + 1));
+
+      if (key == "use_dhcp") loaded.useDhcp = (val == "1");
+      else if (key == "static_ip") parseIPv4(val, loaded.staticIp);
+      else if (key == "subnet_mask") parseIPv4(val, loaded.subnetMask);
+      else if (key == "gateway_ip") parseIPv4(val, loaded.gatewayIp);
+      else if (key == "tcp_port") loaded.tcpPort = (uint16_t)val.toInt();
+      else if (key == "slave_id") loaded.slaveId = (uint8_t)val.toInt();
+      else if (key == "baud_rate") loaded.baudRate = (uint32_t)val.toInt();
+      else if (key == "data_bits") loaded.dataBits = (uint8_t)val.toInt();
+      else if (key == "parity" && val.length() > 0) loaded.parity = val.charAt(0);
+      else if (key == "stop_bits") loaded.stopBits = (uint8_t)val.toInt();
+    }
+    f.close();
+  }
+  Shared_unlockFileSystem();
+
+  if (!found) return true; // keep defaults
+
+  if (!Shared_lockState(pdMS_TO_TICKS(200))) return false;
+  gatewaySettings = loaded;
+  Shared_unlockState();
+  return true;
+}
+
+bool Shared_getGatewaySettings(GatewaySettings &settings) {
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return false;
+  settings = gatewaySettings;
+  Shared_unlockState();
+  return true;
+}
+
+bool Shared_saveGatewaySettings(const GatewaySettings &settings) {
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(1000))) return false;
+  File f = LittleFS.open("/gateway.conf", "w");
+  if (!f) {
+    Shared_unlockFileSystem();
+    return false;
+  }
+
+  f.println(String("use_dhcp=") + (settings.useDhcp ? "1" : "0"));
+  f.println(String("static_ip=") + ipToString(settings.staticIp));
+  f.println(String("subnet_mask=") + ipToString(settings.subnetMask));
+  f.println(String("gateway_ip=") + ipToString(settings.gatewayIp));
+  f.println(String("tcp_port=") + String(settings.tcpPort));
+  f.println(String("slave_id=") + String(settings.slaveId));
+  f.println(String("baud_rate=") + String(settings.baudRate));
+  f.println(String("data_bits=") + String(settings.dataBits));
+  f.println(String("parity=") + String(settings.parity));
+  f.println(String("stop_bits=") + String(settings.stopBits));
+  f.close();
+  Shared_unlockFileSystem();
+
+  if (!Shared_lockState(pdMS_TO_TICKS(200))) return false;
+  gatewaySettings = settings;
+  Shared_unlockState();
+  return true;
 }

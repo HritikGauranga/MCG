@@ -33,6 +33,7 @@ void setup() {
 
   ensureMBMapConfigFile();
   Shared_loadMessageConfig();
+  Shared_loadGatewaySettings();
   printMBMapSummary();
   printAPStatus();
 

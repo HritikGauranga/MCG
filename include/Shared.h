@@ -49,6 +49,19 @@ struct SystemSnapshot {
   int16_t  inputRegs[INPUT_REGISTER_COUNT];
 };
 
+struct GatewaySettings {
+  bool    useDhcp;
+  uint8_t staticIp[4];
+  uint8_t subnetMask[4];
+  uint8_t gatewayIp[4];
+  uint16_t tcpPort;
+  uint8_t slaveId;
+  uint32_t baudRate;
+  uint8_t dataBits; // 7 or 8
+  char    parity;   // N, E, O
+  uint8_t stopBits; // 1 or 2
+};
+
 extern const int BUTTON_PIN;
 extern const int MODEM_RX;
 extern const int MODEM_TX;
@@ -76,6 +89,9 @@ void Shared_unlockFileSystem();
 bool   Shared_loadMessageConfig();
 size_t Shared_getLoadedMessageCount();
 bool   Shared_getMessageConfig(size_t index, MessageConfig &config);
+bool   Shared_loadGatewaySettings();
+bool   Shared_getGatewaySettings(GatewaySettings &settings);
+bool   Shared_saveGatewaySettings(const GatewaySettings &settings);
 
 // Register access
 SystemSnapshot Shared_getSnapshot();

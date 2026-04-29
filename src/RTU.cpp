@@ -7,9 +7,19 @@ static const int RXD2 = 9;
 static const int TXD2 = 10;
 
 void RTU_init() {
-  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  GatewaySettings settings = {};
+  Shared_getGatewaySettings(settings);
+
+  uint32_t serialCfg = SERIAL_8N1;
+  if (settings.dataBits == 7 && settings.parity == 'E' && settings.stopBits == 1) serialCfg = SERIAL_7E1;
+  else if (settings.dataBits == 7 && settings.parity == 'O' && settings.stopBits == 1) serialCfg = SERIAL_7O1;
+  else if (settings.dataBits == 8 && settings.parity == 'E' && settings.stopBits == 1) serialCfg = SERIAL_8E1;
+  else if (settings.dataBits == 8 && settings.parity == 'O' && settings.stopBits == 1) serialCfg = SERIAL_8O1;
+  else if (settings.dataBits == 8 && settings.parity == 'N' && settings.stopBits == 2) serialCfg = SERIAL_8N2;
+
+  Serial2.begin(settings.baudRate, serialCfg, RXD2, TXD2);
   mbRTU.begin(&Serial2);
-  mbRTU.slave(1);
+  mbRTU.slave(settings.slaveId);
 
   for (uint16_t i = 0; i < HOLDING_REGISTER_COUNT; ++i) mbRTU.addHreg(i, 0);
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT;   ++i) mbRTU.addIreg(i, 0);

@@ -5,13 +5,15 @@
 #include <ArduinoModbus.h>
 
 static byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xEE};
-static EthernetServer  ethServer(502);
+static EthernetServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
 static EthernetClient  activeClient;
 static bool            clientActive  = false;
 static unsigned long   lastDHCPCheck = 0;
 
 void TCP_init() {
+  GatewaySettings settings = {};
+  Shared_getGatewaySettings(settings);
   const int W5500_RST = 14;
   pinMode(W5500_RST, OUTPUT);
   digitalWrite(W5500_RST, LOW);
@@ -23,10 +25,16 @@ void TCP_init() {
   Ethernet.init(5);
 
   Serial.println("[ETH] Starting Ethernet...");
-  bool dhcpOk = (Ethernet.begin(mac) != 0);
-  if (!dhcpOk || Ethernet.gatewayIP() == IPAddress(0, 0, 0, 0)) {
-    Serial.println("[ETH] DHCP failed, using static IP");
-    Ethernet.begin(mac, IPAddress(192, 168, 8, 200));
+  bool dhcpOk = false;
+  if (settings.useDhcp) {
+    dhcpOk = (Ethernet.begin(mac) != 0);
+  }
+  if (!settings.useDhcp || !dhcpOk || Ethernet.gatewayIP() == IPAddress(0, 0, 0, 0)) {
+    Serial.println("[ETH] Using static IP");
+    IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
+    IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
+    IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
+    Ethernet.begin(mac, ip, gw, gw, sn);
   } else {
     Serial.println("[ETH] DHCP OK");
   }
@@ -34,9 +42,12 @@ void TCP_init() {
   Serial.print("[ETH] IP: ");      Serial.println(Ethernet.localIP());
   Serial.print("[ETH] Subnet: ");  Serial.println(Ethernet.subnetMask());
   Serial.print("[ETH] Gateway: "); Serial.println(Ethernet.gatewayIP());
-  Serial.println("[ETH] Modbus TCP Port: 502");
+  Serial.print("[ETH] Modbus TCP Port: ");
+  Serial.println(settings.tcpPort);
 
-  ethServer.begin();
+  static EthernetServer serverInstance(settings.tcpPort);
+  ethServer = &serverInstance;
+  ethServer->begin();
   modbusTCPServer.begin();
   modbusTCPServer.configureHoldingRegisters(0, HOLDING_REGISTER_COUNT);
   modbusTCPServer.configureInputRegisters(0, INPUT_REGISTER_COUNT);
@@ -52,6 +63,8 @@ void TCP_maintainDHCP() {
 }
 
 void TCP_processNetwork() {
+  if (ethServer == nullptr) return;
+
   if (clientActive) {
     if (!activeClient.connected()) {
       activeClient.stop();
@@ -62,7 +75,7 @@ void TCP_processNetwork() {
     return;
   }
 
-  EthernetClient newClient = ethServer.available();
+  EthernetClient newClient = ethServer->available();
   if (newClient) {
     activeClient = newClient;
     modbusTCPServer.accept(activeClient);
