@@ -1,6 +1,7 @@
 ﻿#include "AP.h"
 #include "Shared.h"
 #include <ESPAsyncWebServer.h>
+#include <ETH.h>
 #include <LittleFS.h>
 #include <WiFi.h>
 
@@ -15,6 +16,8 @@ static const char    *AUTH_COOKIE_VALUE = "ok";
 static const char    *SERIAL_FILE_PATH  = "/serialnumber.txt";
 static const char    *SERIAL_META_PATH  = "/serial_meta.txt";
 static const char    *LOGIN_PASS_PATH   = "/login_pass.txt";
+static const char    *MBMAP_FILE_PATH   = "/MBmapconf.csv";
+static const char    *MBMAP_BKP_PATH    = "/MBmapconf_backup.csv";
 #ifndef FW_BUILD_TAG
 #define FW_BUILD_TAG __DATE__ " " __TIME__
 #endif
@@ -475,8 +478,8 @@ loadCfg();
 void ensureMBMapConfigFile() {
   if (!Shared_lockFileSystem()) return;
 
-  if (!LittleFS.exists("/MBmapconf.csv")) {
-    File f = LittleFS.open("/MBmapconf.csv", "w");
+  if (!LittleFS.exists(MBMAP_FILE_PATH)) {
+    File f = LittleFS.open(MBMAP_FILE_PATH, "w");
     if (f) {
       f.println("Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message");
       f.println("1, 8149979689, 8655138978, 9030123253, 51856452185, 7111111111, ALARM: Temperature is HIGH!");
@@ -485,6 +488,20 @@ void ensureMBMapConfigFile() {
       f.println("4, 8149979689, , , , 7111111111, ALARM: Pump oil Temperature is back to normal.");
       f.println("5, 8149979689, , , , , ALARM: Speed is HIGH!");
       f.println("6, , , , , , Return to normal: Speed is back to normal.");
+      f.close();
+    }
+  }
+
+  if (!LittleFS.exists(MBMAP_BKP_PATH)) {
+    File f = LittleFS.open(MBMAP_BKP_PATH, "w");
+    if (f) {
+      f.println("Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message");
+      f.println("1,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 1");
+      f.println("2,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 2");
+      f.println("3,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 3");
+      f.println("4,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 4");
+      f.println("5,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 5");
+      f.println("6,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 6");
       f.close();
     }
   }
@@ -505,7 +522,7 @@ void printAPStatus() {
   Serial.println("To enable AP Mode: Press and hold button on GPIO 33");
   Serial.println("AP SSID: ESP32_FileServer");
   Serial.println("AP Password: 12345678");
-  Serial.println("AP URL: http://192.168.4.1");
+  Serial.println("AP URL: http://10.10.10.10");
   Serial.println("Note: AP mode not active by default");
 }
 
@@ -722,10 +739,19 @@ void setupWebServerRoutes() {
 
     String serial = readSerialNumber();
     if (serial.length() == 0) serial = "Not Set";
+    String apIp = WiFi.softAPIP().toString();
+    if (apIp == "0.0.0.0") apIp = "AP Mode Off (10.10.10.10 when enabled)";
+    String modbusIp = ETH.localIP().toString();
+    if (modbusIp == "0.0.0.0") {
+      modbusIp = ipBytesToString(s.staticIp);
+    }
+    String modbusEndpoint = modbusIp;
 
     String body = "{";
     body += "\"serial_number\":\"" + serial + "\",";
     body += "\"login_user\":\"" + getLoginUsername() + "\",";
+    body += "\"ap_ip\":\"" + apIp + "\",";
+    body += "\"modbus_endpoint\":\"" + modbusEndpoint + "\",";
     body += "\"use_dhcp\":" + String(s.useDhcp ? "true" : "false") + ",";
     body += "\"static_ip\":\"" + ipBytesToString(s.staticIp) + "\",";
     body += "\"subnet_mask\":\"" + ipBytesToString(s.subnetMask) + "\",";
@@ -786,14 +812,33 @@ void setupWebServerRoutes() {
       request->send(503, "text/plain", "File system busy");
       return;
     }
-    bool exists = LittleFS.exists("/MBmapconf.csv");
+    bool exists = LittleFS.exists(MBMAP_FILE_PATH);
     Shared_unlockFileSystem();
 
     if (!exists) {
       request->send(404, "text/plain", "File not found");
       return;
     }
-    request->send(LittleFS, "/MBmapconf.csv", "text/csv", true);
+    request->send(LittleFS, MBMAP_FILE_PATH, "text/csv", true);
+  });
+
+  server.on("/api/download-csv/mbmapconf-backup", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "text/plain", "Unauthorized");
+      return;
+    }
+    if (!Shared_lockFileSystem()) {
+      request->send(503, "text/plain", "File system busy");
+      return;
+    }
+    bool exists = LittleFS.exists(MBMAP_BKP_PATH);
+    Shared_unlockFileSystem();
+
+    if (!exists) {
+      request->send(404, "text/plain", "Backup file not found");
+      return;
+    }
+    request->send(LittleFS, MBMAP_BKP_PATH, "text/csv", true);
   });
 
   server.on(
@@ -813,7 +858,7 @@ void setupWebServerRoutes() {
           request->send(503, "application/json", "{\"error\":\"File system busy\"}");
           return;
         }
-        uploadFile = LittleFS.open("/MBmapconf.csv", "w");
+        uploadFile = LittleFS.open(MBMAP_FILE_PATH, "w");
         if (!uploadFile) {
           Shared_unlockFileSystem();
           request->send(500, "application/json", "{\"error\":\"File open failed\"}");
@@ -850,7 +895,7 @@ void setupWebServerRoutes() {
       request->send(503, "application/json", "{\"error\":\"File system busy\"}");
       return;
     }
-    bool removed = LittleFS.exists("/MBmapconf.csv") && LittleFS.remove("/MBmapconf.csv");
+    bool removed = LittleFS.exists(MBMAP_FILE_PATH) && LittleFS.remove(MBMAP_FILE_PATH);
     Shared_unlockFileSystem();
     Shared_loadMessageConfig();
 
@@ -880,6 +925,10 @@ void startAPMode() {
   Serial.println("[AP] Starting Access Point...");
   WiFi.mode(WIFI_AP_STA);
   delay(50);
+  IPAddress apIP(10, 10, 10, 10);
+  IPAddress gateway(10, 10, 10, 10);
+  IPAddress subnet(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, gateway, subnet);
   WiFi.softAP("ESP32_FileServer", "12345678");
   delay(200);
 
@@ -1016,6 +1065,8 @@ String htmlPage() {
   <div id="dashboard" class="dashboard-grid">
     <div class="dash-item"><span class="dash-label">Serial Number</span><span id="dash-serial" class="dash-value">Loading...</span></div>
     <div class="dash-item"><span class="dash-label">Login User Name</span><span id="dash-login-user" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Wi-Fi AP IP</span><span id="dash-ap-ip" class="dash-value">Loading...</span></div>
+    <div class="dash-item"><span class="dash-label">Modbus TCP Endpoint</span><span id="dash-modbus-endpoint" class="dash-value">Loading...</span></div>
     <div class="dash-item"><span class="dash-label">DHCP Mode</span><span id="dash-dhcp" class="dash-value">Loading...</span></div>
     <div class="dash-item"><span class="dash-label">Static IP</span><span id="dash-static-ip" class="dash-value">Loading...</span></div>
     <div class="dash-item"><span class="dash-label">Subnet Mask</span><span id="dash-subnet" class="dash-value">Loading...</span></div>
@@ -1036,6 +1087,7 @@ String htmlPage() {
   <div class="actions">
     <button class="primary"  onclick="document.getElementById('file').click()">&#8593; Upload CSV</button>
     <button class="primary"  onclick="downloadCSV()">&#8595; Download CSV</button>
+    <button class="primary"  onclick="downloadBackupCSV()">&#8595; Download Backup CSV</button>
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
   </div>
   <p id="upload-note" class="note hidden"><strong>Note:</strong> CSV uploaded successfully. Please verify all phone numbers in <strong>Loaded Entries</strong>. Invalid or non-existent numbers can cause SMS send failures.</p>
@@ -1092,6 +1144,8 @@ function loadDashboard() {
     .then(function(d) {
       setDash('dash-serial', d.serial_number || 'Not Set');
       setDash('dash-login-user', d.login_user || 'admin');
+      setDash('dash-ap-ip', d.ap_ip || '-');
+      setDash('dash-modbus-endpoint', d.modbus_endpoint || '-');
       setDash('dash-dhcp', d.use_dhcp ? 'Enabled' : 'Disabled');
       setDash('dash-static-ip', d.static_ip || '-');
       setDash('dash-subnet', d.subnet_mask || '-');
@@ -1148,6 +1202,10 @@ function loadTable() {
 
 function downloadCSV() {
   window.open('/api/download-csv/mbmapconf');
+}
+
+function downloadBackupCSV() {
+  window.open('/api/download-csv/mbmapconf-backup');
 }
 
 function uploadFile() {
