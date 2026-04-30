@@ -355,6 +355,7 @@ bool Shared_loadGatewaySettings() {
   return true;
 }
 
+
 bool Shared_getGatewaySettings(GatewaySettings &settings) {
   if (!Shared_lockState(pdMS_TO_TICKS(100))) return false;
   settings = gatewaySettings;
