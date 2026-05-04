@@ -24,6 +24,41 @@ static bool isValidIP(const IPAddress &ip) {
   return !(ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0);
 }
 
+static bool waitForEthIP(unsigned long timeoutMs) {
+  const unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    if (ETH.linkUp() && isValidIP(ETH.localIP())) return true;
+    delay(100);
+  }
+  return ETH.linkUp() && isValidIP(ETH.localIP());
+}
+
+static bool applyStaticEthConfig(const GatewaySettings &settings, const char *reasonTag) {
+  IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
+  IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
+  IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
+
+  if (!isValidIP(ip)) {
+    Serial.print("[ETH] ERROR: invalid static IP for ");
+    Serial.println(reasonTag);
+    return false;
+  }
+
+  if (!ETH.config(ip, gw, sn, gw, gw)) {
+    Serial.print("[ETH] ERROR: ETH.config failed for ");
+    Serial.println(reasonTag);
+    return false;
+  }
+
+  if (!waitForEthIP(10000)) {
+    Serial.print("[ETH] ERROR: no valid IP after static config for ");
+    Serial.println(reasonTag);
+    return false;
+  }
+
+  return true;
+}
+
 void TCP_init() {
   GatewaySettings settings = {};
   Shared_getGatewaySettings(settings);
@@ -39,45 +74,19 @@ void TCP_init() {
     ethInitialized = true;
   }
 
+  bool networkReady = false;
+
   if (ethInitialized && settings.useDhcp) {
     Serial.println("[ETH] DHCP mode");
-    const unsigned long start = millis();
-    while (millis() - start < 8000) {
-      if (ETH.linkUp() && isValidIP(ETH.localIP())) break;
-      delay(100);
-    }
+    networkReady = waitForEthIP(8000);
 
-    if (!isValidIP(ETH.localIP())) {
+    if (!networkReady) {
       Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
-      IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
-      IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
-      IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
-      bool cfgOk = ETH.config(ip, gw, sn, gw, gw);
-      if (!cfgOk) {
-        Serial.println("[ETH] WARNING: static fallback config failed");
-      } else {
-        const unsigned long fallbackStart = millis();
-        while (millis() - fallbackStart < 3000) {
-          if (isValidIP(ETH.localIP())) break;
-          delay(100);
-        }
-      }
+      networkReady = applyStaticEthConfig(settings, "DHCP fallback");
     }
   } else if (ethInitialized) {
     Serial.println("[ETH] Using static IP");
-    IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
-    IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
-    IPAddress sn(settings.subnetMask[0], settings.subnetMask[1], settings.subnetMask[2], settings.subnetMask[3]);
-    bool cfgOk = ETH.config(ip, gw, sn, gw, gw);
-    if (!cfgOk) {
-      Serial.println("[ETH] WARNING: static IP config failed");
-    } else {
-      const unsigned long start = millis();
-      while (millis() - start < 3000) {
-        if (isValidIP(ETH.localIP())) break;
-        delay(100);
-      }
-    }
+    networkReady = applyStaticEthConfig(settings, "static mode");
   }
 
   Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
@@ -86,10 +95,20 @@ void TCP_init() {
   Serial.print("[ETH] Modbus TCP Port: ");
   Serial.println(settings.tcpPort);
 
+  if (!ethInitialized || !networkReady) {
+    Serial.println("[ETH] ERROR: Ethernet not ready, Modbus TCP server not started");
+    ethServer = nullptr;
+    return;
+  }
+
   static WiFiServer serverInstance(settings.tcpPort);
   ethServer = &serverInstance;
   ethServer->begin();
-  modbusTCPServer.begin();
+  if (!modbusTCPServer.begin()) {
+    Serial.println("[ETH] ERROR: ModbusTCPServer.begin() failed");
+    ethServer = nullptr;
+    return;
+  }
   modbusTCPServer.configureHoldingRegisters(0, HOLDING_REGISTER_COUNT);
   modbusTCPServer.configureInputRegisters(0, INPUT_REGISTER_COUNT);
 

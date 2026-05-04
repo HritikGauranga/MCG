@@ -8,6 +8,7 @@ bool modemReady = false;
 static QueueHandle_t smsQueue = nullptr;
 static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
+static unsigned long lastNotReadyLogMs = 0;
 
 // ---------------------------------------------------------------------------
 // Serial AT helpers
@@ -89,7 +90,7 @@ bool waitForNetwork() {
       Serial.println("[MODEM] Network registered");
       return true;
     }
-    Serial.println("[MODEM] Waiting for network...");
+    Serial.printf("[MODEM] Waiting for network... (%d/10)\n", i + 1);
     delay(2000);
   }
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_ERROR);
@@ -358,7 +359,11 @@ void Modem_task(void *pvParameters) {
           lastReinitAttemptMs = now;
           initModem();
         } else {
-          Serial.println("[MODEM] Not ready - reinit cooldown active");
+          // Rate-limit repetitive cooldown logs to keep serial output readable.
+          if (now - lastNotReadyLogMs >= 5000) {
+            Serial.println("[MODEM] Not ready - reinit cooldown active");
+            lastNotReadyLogMs = now;
+          }
         }
       }
 
