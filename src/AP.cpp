@@ -1,6 +1,7 @@
 ﻿#include "AP.h"
 #include "Shared.h"
 #include <ESPAsyncWebServer.h>
+#include <esp_system.h>
 #include <ETH.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -12,7 +13,6 @@ static bool          serverRoutesSetup = false;
 static const char    *WEBUI_USER        = "admin";
 static const char    *WEBUI_PASS        = "admin123";
 static const char    *AUTH_COOKIE_NAME  = "MSMSG_AUTH";
-static const char    *AUTH_COOKIE_VALUE = "ok";
 static const char    *SERIAL_FILE_PATH  = "/serialnumber.txt";
 static const char    *SERIAL_META_PATH  = "/serial_meta.txt";
 static const char    *LOGIN_USER_PATH   = "/login_user.txt";
@@ -23,11 +23,25 @@ static const char    *MBMAP_BKP_PATH    = "/MBmapconf_backup.csv";
 #define FW_BUILD_TAG __DATE__ " " __TIME__
 #endif
 static const char *FW_BUILD_TAG_VALUE = FW_BUILD_TAG;
+static String currentAuthToken = "";
+
+static String createSessionToken() {
+  String token = "";
+  token.reserve(32);
+  for (int i = 0; i < 4; ++i) {
+    uint32_t v = esp_random();
+    char buf[9];
+    snprintf(buf, sizeof(buf), "%08lx", (unsigned long)v);
+    token += buf;
+  }
+  return token;
+}
 
 static bool isAuthenticated(AsyncWebServerRequest *request) {
+  if (currentAuthToken.length() == 0) return false;
   if (!request->hasHeader("Cookie")) return false;
   String cookie = request->getHeader("Cookie")->value();
-  String token  = String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE;
+  String token  = String(AUTH_COOKIE_NAME) + "=" + currentAuthToken;
   return cookie.indexOf(token) >= 0;
 }
 
@@ -38,6 +52,7 @@ static void sendRedirect(AsyncWebServerRequest *request, const char *location) {
 }
 
 static void clearAuthCookie(AsyncWebServerRequest *request) {
+  currentAuthToken = "";
   AsyncWebServerResponse *res = request->beginResponse(302);
   res->addHeader("Location", "/login");
   res->addHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=; Path=/; Max-Age=0");
@@ -622,10 +637,11 @@ void setupWebServerRoutes() {
     String expectedPass = getLoginPassword();
 
     if (user == expectedUser && pass == expectedPass) {
+      currentAuthToken = createSessionToken();
       AsyncWebServerResponse *res = request->beginResponse(302);
       res->addHeader("Location", "/");
       res->addHeader("Set-Cookie",
-                     String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE +
+                     String(AUTH_COOKIE_NAME) + "=" + currentAuthToken +
                      "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax");
       request->send(res);
       return;
