@@ -23,6 +23,8 @@ static const char    *MBMAP_BKP_PATH    = "/MBmapconf_backup.csv";
 static const char *FW_BUILD_TAG_VALUE = FW_BUILD_TAG;
 static String currentAuthToken = "";
 
+static String htmlPage();
+
 static String createSessionToken() {
   String token = "";
   token.reserve(32);
@@ -518,7 +520,6 @@ void printAPStatus() {
 // Format: [{"no":1,"phones":["081...","","","",""],"text":"ALARM..."},...]
 // ---------------------------------------------------------------------------
 static String buildConfigTableJSON() {
-  size_t count = Shared_getLoadedMessageCount();
   String json = "[";
 
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -548,7 +549,7 @@ static String buildConfigTableJSON() {
   return json;
 }
 
-void setupWebServerRoutes() {
+static void setupWebServerRoutes() {
   if (serverRoutesSetup) return;
 
   server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -878,7 +879,7 @@ void setupWebServerRoutes() {
   serverRoutesSetup = true;
 }
 
-void startAPMode() {
+static void startAPMode() {
   if (Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Starting Access Point...");
@@ -901,7 +902,7 @@ void startAPMode() {
   Serial.println("[AP] Access Point is now active");
 }
 
-void stopAPMode() {
+static void stopAPMode() {
   if (!Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Stopping Access Point...");
@@ -948,7 +949,7 @@ void AP_taskLoop(void *pvParameters) {
   }
 }
 
-String htmlPage() {
+static String htmlPage() {
   return R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -1124,7 +1125,7 @@ function loadDashboard() {
 }
 
 function phone(num) {
-  if (!num || num.trim() === '') return '<span style="color:#bbb">â€”</span>';
+  if (!num || num.trim() === '') return '<span style="color:#bbb">-</span>';
   return '<span class="phone">' + num + '</span>';
 }
 
@@ -1182,7 +1183,7 @@ function uploadFile() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
-        setStatus('Upload successful â€” ' + data.loaded + ' entries loaded.', 'ok');
+        setStatus('Upload successful - ' + data.loaded + ' entries loaded.', 'ok');
         showUploadNote(true);
         renderTable(data.rows);  // instant table update from upload response
       } else {
@@ -1231,5 +1232,3 @@ loadTable();
 </html>
 )rawliteral";
 }
-
-

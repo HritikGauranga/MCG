@@ -1,11 +1,9 @@
 #include "Modem.h"
 #include "Shared.h"
 #include <HardwareSerial.h>
-#include <freertos/queue.h>
 
 HardwareSerial SerialAT(1);
-bool modemReady = false;
-static QueueHandle_t smsQueue = nullptr;
+static bool modemReady = false;
 static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
 static unsigned long lastNotReadyLogMs = 0;
@@ -48,18 +46,9 @@ static bool isLikelyValidPhoneNumber(const String &number) {
 }
 
 // ---------------------------------------------------------------------------
-// Queue helper
-// ---------------------------------------------------------------------------
-static bool enqueueJob(uint8_t messageIndex) {
-  if (smsQueue == nullptr) return false;
-  SmsJob job = {messageIndex};
-  return xQueueSend(smsQueue, &job, 0) == pdTRUE;
-}
-
-// ---------------------------------------------------------------------------
 // AT command
 // ---------------------------------------------------------------------------
-String sendAT(const String &cmd, int timeout) {
+static String sendAT(const String &cmd, int timeout = 3000) {
   while (SerialAT.available()) SerialAT.read();
 
   Serial.println("[AT] >> " + cmd);
@@ -74,7 +63,7 @@ String sendAT(const String &cmd, int timeout) {
 // ---------------------------------------------------------------------------
 // Modem checks
 // ---------------------------------------------------------------------------
-bool modemSimReady() {
+static bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   Shared_writeInputRegister(SIM_STATUS_REGISTER,
@@ -82,7 +71,7 @@ bool modemSimReady() {
   return ready;
 }
 
-bool waitForNetwork() {
+static bool waitForNetwork() {
   for (int i = 0; i < 10; ++i) {
     String res = sendAT("AT+CREG?", 2000);
     if (res.indexOf("0,1") != -1 || res.indexOf("0,5") != -1) {
@@ -101,7 +90,7 @@ bool waitForNetwork() {
 // ---------------------------------------------------------------------------
 // sendSMS — two-step AT+CMGS exchange
 // ---------------------------------------------------------------------------
-bool sendSMS(const String &number, const String &message) {
+static bool sendSMS(const String &number, const String &message) {
   if (!modemReady) {
     Serial.println("[SMS] ERROR: Modem not ready");
     return false;
@@ -204,7 +193,7 @@ static void modemPowerOn() {
 // ---------------------------------------------------------------------------
 // initModem
 // ---------------------------------------------------------------------------
-void initModem() {
+static void initModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(500);
 
@@ -245,15 +234,12 @@ void initModem() {
 // ---------------------------------------------------------------------------
 // Modem_init — called from setup()
 // ---------------------------------------------------------------------------
-bool Modem_init(size_t queueLength) {
-  if (smsQueue == nullptr) {
-    smsQueue = xQueueCreate(queueLength, sizeof(SmsJob));
-  }
+bool Modem_init() {
   Shared_writeInputRegister(DEVICE_STATUS_REGISTER,  (int16_t)STATE_READY);
   Shared_writeInputRegister(MODEM_STATUS_REGISTER,   (int16_t)STATE_UNKNOWN);
   Shared_writeInputRegister(SIM_STATUS_REGISTER,     (int16_t)STATE_UNKNOWN);
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_UNKNOWN);
-  return smsQueue != nullptr;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +280,10 @@ static int16_t dispatchMessage(size_t messageIndex) {
 // ---------------------------------------------------------------------------
 // Rising-edge scanner
 //
-// pendingJobs[] — per-slot flag that is set when a job is enqueued and
+// pendingJobs[] — per-slot flag set by polling when a trigger edge is found and
 // cleared when the job is processed. This guarantees a slot can never have
-// more than one job in the queue at a time, even if scanTriggerEdges runs
-// multiple times while the register stays at 1.
+// more than one pending SMS job at a time, even if scanTriggerEdges runs
+// multiple times while the trigger register stays at 1.
 //
 // Clear-on-zero — when the PLC writes 0 to a trigger register, the
 // corresponding result register is cleared back to STATUS_IDLE (0).
@@ -326,16 +312,41 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
     lowStableCount[i] = 0;
 
     if (!previousState[i] && !pendingJobs[i]) {
-      // Rising edge detected AND no job already queued for this slot
-      if (enqueueJob((uint8_t)i)) {
-        pendingJobs[i] = true;
-        previousState[i] = true;
-      } else {
-        Shared_writeResultRegister(i, STATUS_ERROR_MODEM);
-      }
+      pendingJobs[i] = true;
+      previousState[i] = true;
     }
   }
 }
+
+static void processPendingJobs() {
+  for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    if (!pendingJobs[i]) continue;
+
+    if (!modemReady) {
+      unsigned long now = millis();
+      if (now - lastReinitAttemptMs >= 12000) {
+        Serial.println("[MODEM] Not ready - attempting reinit...");
+        lastReinitAttemptMs = now;
+        initModem();
+      } else if (now - lastNotReadyLogMs >= 5000) {
+        Serial.println("[MODEM] Not ready - reinit cooldown active");
+        lastNotReadyLogMs = now;
+      }
+    }
+
+    if (!modemReady) {
+      Shared_writeResultRegister(i, STATUS_ERROR_MODEM);
+      pendingJobs[i] = false;
+      return;
+    }
+
+    int16_t result = dispatchMessage(i);
+    Shared_writeResultRegister(i, result);
+    pendingJobs[i] = false;
+    return;
+  }
+}
+
 void Modem_task(void *pvParameters) {
   (void)pvParameters;
 
@@ -344,45 +355,13 @@ void Modem_task(void *pvParameters) {
   Serial.println("[MODEM TASK] Init complete, starting SMS processing");
 
   bool   previousState[MESSAGE_SLOT_COUNT] = {};
-  SmsJob job = {};
 
   for (;;) {
-    // Scan edges first so we catch any transitions that happened
-    // while the previous dispatch was running
     scanTriggerEdges(previousState);
-
-    if (xQueueReceive(smsQueue, &job, pdMS_TO_TICKS(50)) == pdTRUE) {
-      if (!modemReady) {
-        unsigned long now = millis();
-        if (now - lastReinitAttemptMs >= 12000) {
-          Serial.println("[MODEM] Not ready - attempting reinit...");
-          lastReinitAttemptMs = now;
-          initModem();
-        } else {
-          // Rate-limit repetitive cooldown logs to keep serial output readable.
-          if (now - lastNotReadyLogMs >= 5000) {
-            Serial.println("[MODEM] Not ready - reinit cooldown active");
-            lastNotReadyLogMs = now;
-          }
-        }
-      }
-
-      if (!modemReady) {
-        Shared_writeResultRegister(job.messageIndex, STATUS_ERROR_MODEM);
-        pendingJobs[job.messageIndex] = false;  // allow retry on next trigger
-        continue;
-      }
-
-      int16_t result = dispatchMessage(job.messageIndex);
-      Shared_writeResultRegister(job.messageIndex, result);
-      pendingJobs[job.messageIndex] = false;  // slot is free for next trigger
-    }
-
+    processPendingJobs();
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
-
 
 
 

@@ -43,7 +43,6 @@ struct MessageConfig {
 };
 
 struct SystemSnapshot {
-  bool     apModeActive;
   uint16_t triggerRegs[MESSAGE_SLOT_COUNT];
   int16_t  resultRegs[MESSAGE_SLOT_COUNT];
   int16_t  inputRegs[INPUT_REGISTER_COUNT];
@@ -67,11 +66,7 @@ extern const int MODEM_RX;
 extern const int MODEM_TX;
 extern const int MODEM_PWRKEY;
 
-extern const unsigned long DHCP_RENEW_MS;
 extern const unsigned long BUTTON_DEBOUNCE_MS;
-
-extern SemaphoreHandle_t stateMutex;
-extern SemaphoreHandle_t filesystemMutex;
 
 // Utility
 String Shared_trimCopy(const String &value);
@@ -95,7 +90,6 @@ bool   Shared_saveGatewaySettings(const GatewaySettings &settings);
 
 // Register access
 SystemSnapshot Shared_getSnapshot();
-bool Shared_readTriggerRegister(size_t index, uint16_t &value);
 bool Shared_writeTriggerRegister(size_t index, uint16_t value);
 bool Shared_writeResultRegister(size_t index, int16_t value);
 bool Shared_writeInputRegister(size_t index, int16_t value);

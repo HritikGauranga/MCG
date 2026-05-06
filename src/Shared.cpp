@@ -6,11 +6,10 @@ const int MODEM_RX     = 16;
 const int MODEM_TX     = 17;
 const int MODEM_PWRKEY = 32;
 
-const unsigned long DHCP_RENEW_MS      = 60000;
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
-SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
-SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload. Not needed for read-only access from RTU/TCP tasks since they never touch the filesystem directly.
+static SemaphoreHandle_t stateMutex      = nullptr; // Guards registers, message configs, AP mode active, and lastSeen arrays.
+static SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload.
 
 static bool     apModeActive = false;
 static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; // 
@@ -260,19 +259,11 @@ bool Shared_getMessageConfig(size_t index, MessageConfig &config) {
 SystemSnapshot Shared_getSnapshot() {
   SystemSnapshot snapshot = {};
   if (!Shared_lockState()) return snapshot;
-  snapshot.apModeActive = apModeActive;
   memcpy(snapshot.triggerRegs, triggerRegs, sizeof(triggerRegs));
   memcpy(snapshot.resultRegs,  resultRegs,  sizeof(resultRegs));
   memcpy(snapshot.inputRegs,   inputRegs,   sizeof(inputRegs));
   Shared_unlockState();
   return snapshot;
-}
-
-bool Shared_readTriggerRegister(size_t index, uint16_t &value) {
-  if (index >= MESSAGE_SLOT_COUNT || !Shared_lockState()) return false;
-  value = triggerRegs[index];
-  Shared_unlockState();
-  return true;
 }
 
 bool Shared_writeTriggerRegister(size_t index, uint16_t value) {
