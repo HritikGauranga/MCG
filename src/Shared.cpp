@@ -8,17 +8,17 @@ const int MODEM_PWRKEY = 32;
 
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
-static SemaphoreHandle_t stateMutex      = nullptr; // Guards registers, message configs, AP mode active, and lastSeen arrays.
-static SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload.
+static SemaphoreHandle_t stateMutex      = nullptr; 
+static SemaphoreHandle_t filesystemMutex = nullptr; 
 
 static bool     apModeActive = false;
-static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; // 
+static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; 
 static int16_t  resultRegs[MESSAGE_SLOT_COUNT]   = {};
-static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
+static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = { 
   (int16_t)STATE_READY,
-  (int16_t)STATE_UNKNOWN,
-  (int16_t)STATE_UNKNOWN,
-  (int16_t)STATE_UNKNOWN
+  (int16_t)STATE_IDLE,
+  (int16_t)STATE_IDLE,
+  (int16_t)STATE_IDLE
 };
 static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;
@@ -49,7 +49,7 @@ void Shared_updateRTULastSeenTriggers() {
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     rtuLastSeenTriggers[i] = triggerRegs[i];
   }
-  Shared_unlockState(); 
+  Shared_unlockState(); // its a mutex
 }
 
 void Shared_updateTCPLastSeenTriggers() {

@@ -10,7 +10,7 @@
 #include "Shared.h"
 #include "TCP.h"
 
-namespace {
+namespace { //
   constexpr uint32_t RTU_TASK_STACK   = 4096;
   constexpr uint32_t TCP_TASK_STACK   = 6144;
   constexpr uint32_t MODEM_TASK_STACK = 8192;

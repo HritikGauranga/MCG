@@ -463,7 +463,7 @@ loadCfg();
 }
 
 void ensureMBMapConfigFile() {
-  if (!Shared_lockFileSystem()) return;
+  if (!Shared_lockFileSystem()) return; //
 
   if (!LittleFS.exists(MBMAP_FILE_PATH)) {
     File f = LittleFS.open(MBMAP_FILE_PATH, "w");

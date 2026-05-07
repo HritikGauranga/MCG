@@ -19,7 +19,7 @@ void RTU_init() {
 
   Serial2.begin(settings.baudRate, serialCfg, RXD2, TXD2);
   mbRTU.begin(&Serial2);
-  mbRTU.slave(settings.slaveId);
+  mbRTU.slave(settings.slaveId); //setting.slaveID is declared in Shared.h as part of "GatewaySettings" struct, so why use "settings" here instead of "GatewaySettings"? because we need to get the actual value of slaveId from the loaded settings, not just refer to the type definition. "settings" is an instance of "GatewaySettings" that holds the current configuration values, including slaveId, which we need to pass to mbRTU.slave() to set the Modbus RTU slave ID correctly. settings is a variable of type "GatewaySettings" that holds the current configuration values which is declared at the beginning of this function and populated by calling Shared_getGatewaySettings(settings).
 
   for (uint16_t i = 0; i < HOLDING_REGISTER_COUNT; ++i) mbRTU.addHreg(i, 0);
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT;   ++i) mbRTU.addIreg(i, 0);

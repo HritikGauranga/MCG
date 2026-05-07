@@ -28,7 +28,7 @@ enum RegisterStatus : int16_t {
 };
 
 enum RuntimeState : int16_t {
-  STATE_UNKNOWN = 0,
+  STATE_IDLE    = 0,
   STATE_READY   = 1,
   STATE_BUSY    = 2,
   STATE_ERROR   = -1
