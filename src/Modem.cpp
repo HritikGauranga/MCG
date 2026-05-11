@@ -1,11 +1,9 @@
 #include "Modem.h"
 #include "Shared.h"
 #include <HardwareSerial.h>
-#include <freertos/queue.h>
 
 HardwareSerial SerialAT(1);
 bool modemReady = false;
-static QueueHandle_t smsQueue = nullptr;
 static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
 static unsigned long lastNotReadyLogMs = 0;
@@ -45,15 +43,6 @@ static bool isLikelyValidPhoneNumber(const String &number) {
     if (c < '0' || c > '9') return false;
   }
   return true;
-}
-
-// ---------------------------------------------------------------------------
-// Queue helper
-// ---------------------------------------------------------------------------
-static bool enqueueJob(uint8_t messageIndex) {
-  if (smsQueue == nullptr) return false;
-  SmsJob job = {messageIndex};
-  return xQueueSend(smsQueue, &job, 0) == pdTRUE;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,15 +234,12 @@ void initModem() {
 // ---------------------------------------------------------------------------
 // Modem_init — called from setup()
 // ---------------------------------------------------------------------------
-bool Modem_init(size_t queueLength) {
-  if (smsQueue == nullptr) {
-    smsQueue = xQueueCreate(queueLength, sizeof(SmsJob));
-  }
+bool Modem_init() {
   Shared_writeInputRegister(DEVICE_STATUS_REGISTER,  (int16_t)STATE_READY);
   Shared_writeInputRegister(MODEM_STATUS_REGISTER,   (int16_t)STATE_UNKNOWN);
   Shared_writeInputRegister(SIM_STATUS_REGISTER,     (int16_t)STATE_UNKNOWN);
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_UNKNOWN);
-  return smsQueue != nullptr;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,18 +278,16 @@ static int16_t dispatchMessage(size_t messageIndex) {
 }
 
 // ---------------------------------------------------------------------------
-// Rising-edge scanner
+// Rising-edge scanner + pending-slot tracker
 //
-// pendingJobs[] — per-slot flag that is set when a job is enqueued and
-// cleared when the job is processed. This guarantees a slot can never have
-// more than one job in the queue at a time, even if scanTriggerEdges runs
-// multiple times while the register stays at 1.
+// pendingSlots[] — per-slot flag set on rising edge and consumed after
+// dispatch. This keeps one-shot behavior per 0->1 transition without queues.
 //
 // Clear-on-zero — when the PLC writes 0 to a trigger register, the
 // corresponding result register is cleared back to STATUS_IDLE (0).
 // This resets the slot so the PLC can write 1 again to retrigger.
 // ---------------------------------------------------------------------------
-static bool pendingJobs[MESSAGE_SLOT_COUNT] = {};
+static bool pendingSlots[MESSAGE_SLOT_COUNT] = {};
 static uint8_t lowStableCount[MESSAGE_SLOT_COUNT] = {};
 
 static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
@@ -325,17 +309,30 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
 
     lowStableCount[i] = 0;
 
-    if (!previousState[i] && !pendingJobs[i]) {
-      // Rising edge detected AND no job already queued for this slot
-      if (enqueueJob((uint8_t)i)) {
-        pendingJobs[i] = true;
-        previousState[i] = true;
-      } else {
-        Shared_writeResultRegister(i, STATUS_ERROR_MODEM);
-      }
+    if (!previousState[i] && !pendingSlots[i]) {
+      pendingSlots[i] = true;
+      previousState[i] = true;
     }
   }
 }
+
+static bool takeNextPendingSlot(size_t &slotIndex) {
+  SystemSnapshot snapshot = Shared_getSnapshot();
+  for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
+    if (!pendingSlots[i]) continue;
+
+    if (snapshot.triggerRegs[i] == 0) {
+      pendingSlots[i] = false;
+      continue;
+    }
+
+    slotIndex = i;
+    pendingSlots[i] = false;
+    return true;
+  }
+  return false;
+}
+
 void Modem_task(void *pvParameters) {
   (void)pvParameters;
 
@@ -344,14 +341,12 @@ void Modem_task(void *pvParameters) {
   Serial.println("[MODEM TASK] Init complete, starting SMS processing");
 
   bool   previousState[MESSAGE_SLOT_COUNT] = {};
-  SmsJob job = {};
+  size_t slotToProcess = 0;
 
   for (;;) {
-    // Scan edges first so we catch any transitions that happened
-    // while the previous dispatch was running
     scanTriggerEdges(previousState);
 
-    if (xQueueReceive(smsQueue, &job, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (takeNextPendingSlot(slotToProcess)) {
       if (!modemReady) {
         unsigned long now = millis();
         if (now - lastReinitAttemptMs >= 12000) {
@@ -368,20 +363,17 @@ void Modem_task(void *pvParameters) {
       }
 
       if (!modemReady) {
-        Shared_writeResultRegister(job.messageIndex, STATUS_ERROR_MODEM);
-        pendingJobs[job.messageIndex] = false;  // allow retry on next trigger
+        Shared_writeResultRegister(slotToProcess, STATUS_ERROR_MODEM);
         continue;
       }
 
-      int16_t result = dispatchMessage(job.messageIndex);
-      Shared_writeResultRegister(job.messageIndex, result);
-      pendingJobs[job.messageIndex] = false;  // slot is free for next trigger
+      int16_t result = dispatchMessage(slotToProcess);
+      Shared_writeResultRegister(slotToProcess, result);
     }
 
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
 
 
 
