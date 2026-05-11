@@ -115,7 +115,11 @@ void TCP_init() {
   Serial.println("[ETH] Modbus TCP server ready");
 }
 
-static void TCP_processNetwork() {
+void TCP_maintainDHCP() {
+  // DHCP renew is handled by lwIP ETH driver internally.
+}
+
+void TCP_processNetwork() {
   if (ethServer == nullptr) return;
 
   if (clientActive) {
@@ -128,7 +132,7 @@ static void TCP_processNetwork() {
     return;
   }
 
-  WiFiClient newClient = ethServer->accept();
+  WiFiClient newClient = ethServer->available();
   if (newClient) {
     activeClient = newClient;
     modbusTCPServer.accept(activeClient);
@@ -143,7 +147,7 @@ static void TCP_processNetwork() {
 // last saw. This prevents TCP from clobbering a value RTU wrote and vice
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
-static void TCP_syncFrom() {
+void TCP_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t tcpVal  = (uint16_t)modbusTCPServer.holdingRegisterRead(TRIGGER_REGISTER_START + i);
     uint16_t lastSeen = 0;
@@ -162,7 +166,7 @@ static void TCP_syncFrom() {
 // This prevents the clobber race where RTU_syncFrom mistakes TCP's mirror
 // write as a new RTU master write.
 // ---------------------------------------------------------------------------
-static void TCP_syncTo() {
+void TCP_syncTo() {
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -185,6 +189,7 @@ void TCP_taskLoop(void *pvParameters) {
     TCP_processNetwork();
     TCP_syncFrom();
     TCP_syncTo();
+    TCP_maintainDHCP();
     vTaskDelay(pdMS_TO_TICKS(5));
   }
 }

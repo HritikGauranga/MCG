@@ -10,11 +10,12 @@
 #include "Shared.h"
 #include "TCP.h"
 
-namespace { //
+namespace {
   constexpr uint32_t RTU_TASK_STACK   = 4096;
   constexpr uint32_t TCP_TASK_STACK   = 6144;
   constexpr uint32_t MODEM_TASK_STACK = 8192;
   constexpr uint32_t AP_TASK_STACK    = 4096;
+  constexpr size_t   SMS_QUEUE_DEPTH  = 64;
 }
 
 void setup() {
@@ -44,8 +45,8 @@ void setup() {
   RTU_init();
   TCP_init();
 
-  if (!Modem_init()) {
-    Serial.println("[MODEM] Failed to initialize modem state — halting");
+  if (!Modem_init(SMS_QUEUE_DEPTH)) {
+    Serial.println("[MODEM] Failed to create SMS queue — halting");
     while (true) delay(1000);
   }
 

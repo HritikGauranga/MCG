@@ -1,7 +1,6 @@
 ﻿#include "AP.h"
 #include "Shared.h"
 #include <ESPAsyncWebServer.h>
-#include <esp_system.h>
 #include <ETH.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -10,38 +9,25 @@ static AsyncWebServer server(80);
 static File          uploadFile;
 static bool          serverStarted     = false;
 static bool          serverRoutesSetup = false;
-static const char    *WEBUI_USER        = "Admin";
-static const char    *WEBUI_PASS        = "Admin@123";
+static const char    *WEBUI_USER        = "admin";
+static const char    *WEBUI_PASS        = "admin123";
 static const char    *AUTH_COOKIE_NAME  = "MSMSG_AUTH";
+static const char    *AUTH_COOKIE_VALUE = "ok";
 static const char    *SERIAL_FILE_PATH  = "/serialnumber.txt";
 static const char    *SERIAL_META_PATH  = "/serial_meta.txt";
+static const char    *LOGIN_USER_PATH   = "/login_user.txt";
+static const char    *LOGIN_PASS_PATH   = "/login_pass.txt";
 static const char    *MBMAP_FILE_PATH   = "/MBmapconf.csv";
 static const char    *MBMAP_BKP_PATH    = "/MBmapconf_backup.csv";
 #ifndef FW_BUILD_TAG
 #define FW_BUILD_TAG __DATE__ " " __TIME__
 #endif
 static const char *FW_BUILD_TAG_VALUE = FW_BUILD_TAG;
-static String currentAuthToken = "";
-
-static String htmlPage();
-
-static String createSessionToken() {
-  String token = "";
-  token.reserve(32);
-  for (int i = 0; i < 4; ++i) {
-    uint32_t v = esp_random();
-    char buf[9];
-    snprintf(buf, sizeof(buf), "%08lx", (unsigned long)v);
-    token += buf;
-  }
-  return token;
-}
 
 static bool isAuthenticated(AsyncWebServerRequest *request) {
-  if (currentAuthToken.length() == 0) return false;
   if (!request->hasHeader("Cookie")) return false;
   String cookie = request->getHeader("Cookie")->value();
-  String token  = String(AUTH_COOKIE_NAME) + "=" + currentAuthToken;
+  String token  = String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE;
   return cookie.indexOf(token) >= 0;
 }
 
@@ -52,7 +38,6 @@ static void sendRedirect(AsyncWebServerRequest *request, const char *location) {
 }
 
 static void clearAuthCookie(AsyncWebServerRequest *request) {
-  currentAuthToken = "";
   AsyncWebServerResponse *res = request->beginResponse(302);
   res->addHeader("Location", "/login");
   res->addHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=; Path=/; Max-Age=0");
@@ -177,11 +162,81 @@ static String readSerialMeta() {
 }
 
 static String getLoginUsername() {
-  return String(WEBUI_USER);
+  String baseUser = String(WEBUI_USER);
+  if (Shared_lockFileSystem(pdMS_TO_TICKS(1000))) {
+    if (LittleFS.exists(LOGIN_USER_PATH)) {
+      File f = LittleFS.open(LOGIN_USER_PATH, "r");
+      if (f) {
+        String stored = f.readStringUntil('\n');
+        stored.trim();
+        if (stored.length() > 0) baseUser = stored;
+        f.close();
+      }
+    }
+    Shared_unlockFileSystem();
+  }
+
+  String serial = readSerialNumber();
+  if (serial.length() == 0) return baseUser;
+  return baseUser + serial;
+}
+
+static bool isLoginBaseUsernameValid(const String &user) {
+  if (user.length() < 3 || user.length() > 32) return false;
+  for (size_t i = 0; i < user.length(); ++i) {
+    char c = user.charAt(i);
+    bool ok =
+      (c >= 'A' && c <= 'Z') ||
+      (c >= 'a' && c <= 'z') ||
+      (c >= '0' && c <= '9') ||
+      c == '_' || c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+static bool saveLoginBaseUsername(const String &newUser) {
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) return false;
+  File f = LittleFS.open(LOGIN_USER_PATH, "w");
+  if (!f) {
+    Shared_unlockFileSystem();
+    return false;
+  }
+  f.println(newUser);
+  f.close();
+  Shared_unlockFileSystem();
+  return true;
 }
 
 static String getLoginPassword() {
-  return String(WEBUI_PASS);
+  String password = String(WEBUI_PASS);
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(1000))) return password;
+
+  if (LittleFS.exists(LOGIN_PASS_PATH)) {
+    File f = LittleFS.open(LOGIN_PASS_PATH, "r");
+    if (f) {
+      String stored = f.readStringUntil('\n');
+      stored.trim();
+      if (stored.length() > 0) password = stored;
+      f.close();
+    }
+  }
+
+  Shared_unlockFileSystem();
+  return password;
+}
+
+static bool saveLoginPassword(const String &newPassword) {
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) return false;
+  File f = LittleFS.open(LOGIN_PASS_PATH, "w");
+  if (!f) {
+    Shared_unlockFileSystem();
+    return false;
+  }
+  f.println(newPassword);
+  f.close();
+  Shared_unlockFileSystem();
+  return true;
 }
 
 static bool isSerialLockedForCurrentBuild() {
@@ -463,7 +518,7 @@ loadCfg();
 }
 
 void ensureMBMapConfigFile() {
-  if (!Shared_lockFileSystem()) return; //
+  if (!Shared_lockFileSystem()) return;
 
   if (!LittleFS.exists(MBMAP_FILE_PATH)) {
     File f = LittleFS.open(MBMAP_FILE_PATH, "w");
@@ -507,9 +562,7 @@ void printAPStatus() {
   Serial.println("");
   Serial.println("=== AP Mode Info ===");
   Serial.println("To enable AP Mode: Press and hold button on GPIO 33");
-  String serial = readSerialNumber();
-  if (serial.length() == 0) serial = "UNSET";
-  Serial.println("AP SSID: MSys-" + serial);
+  Serial.println("AP SSID: ESP32_FileServer");
   Serial.println("AP Password: 12345678");
   Serial.println("AP URL: http://10.10.10.10");
   Serial.println("Note: AP mode not active by default");
@@ -520,6 +573,7 @@ void printAPStatus() {
 // Format: [{"no":1,"phones":["081...","","","",""],"text":"ALARM..."},...]
 // ---------------------------------------------------------------------------
 static String buildConfigTableJSON() {
+  size_t count = Shared_getLoadedMessageCount();
   String json = "[";
 
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -549,7 +603,7 @@ static String buildConfigTableJSON() {
   return json;
 }
 
-static void setupWebServerRoutes() {
+void setupWebServerRoutes() {
   if (serverRoutesSetup) return;
 
   server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -568,11 +622,10 @@ static void setupWebServerRoutes() {
     String expectedPass = getLoginPassword();
 
     if (user == expectedUser && pass == expectedPass) {
-      currentAuthToken = createSessionToken();
       AsyncWebServerResponse *res = request->beginResponse(302);
       res->addHeader("Location", "/");
       res->addHeader("Set-Cookie",
-                     String(AUTH_COOKIE_NAME) + "=" + currentAuthToken +
+                     String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE +
                      "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax");
       request->send(res);
       return;
@@ -755,6 +808,107 @@ static void setupWebServerRoutes() {
     request->send(200, "application/json", body);
   });
 
+  server.on("/api/change-password", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
+
+    String current = request->hasParam("current_password", true) ? request->getParam("current_password", true)->value() : "";
+    String next    = request->hasParam("new_password", true) ? request->getParam("new_password", true)->value() : "";
+    String confirm = request->hasParam("confirm_password", true) ? request->getParam("confirm_password", true)->value() : "";
+
+    if (current != getLoginPassword()) {
+      request->send(400, "application/json", "{\"error\":\"Current password is incorrect\"}");
+      return;
+    }
+    if (next.length() < 6 || next.length() > 32) {
+      request->send(400, "application/json", "{\"error\":\"New password must be 6-32 characters\"}");
+      return;
+    }
+    if (next != confirm) {
+      request->send(400, "application/json", "{\"error\":\"New password and confirm password do not match\"}");
+      return;
+    }
+    if (!saveLoginPassword(next)) {
+      request->send(500, "application/json", "{\"error\":\"Failed to save password\"}");
+      return;
+    }
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
+  server.on("/api/change-username", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
+
+    String next = request->hasParam("new_username", true) ? request->getParam("new_username", true)->value() : "";
+    next.trim();
+
+    if (!isLoginBaseUsernameValid(next)) {
+      request->send(400, "application/json", "{\"error\":\"Username must be 3-32 chars using only A-Z, a-z, 0-9, _ or -\"}");
+      return;
+    }
+    if (!saveLoginBaseUsername(next)) {
+      request->send(500, "application/json", "{\"error\":\"Failed to save username\"}");
+      return;
+    }
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
+  server.on("/api/change-credentials", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!isAuthenticated(request)) {
+      request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+      return;
+    }
+
+    String nextUser = request->hasParam("new_username", true) ? request->getParam("new_username", true)->value() : "";
+    String current  = request->hasParam("current_password", true) ? request->getParam("current_password", true)->value() : "";
+    String nextPass = request->hasParam("new_password", true) ? request->getParam("new_password", true)->value() : "";
+    String confirm  = request->hasParam("confirm_password", true) ? request->getParam("confirm_password", true)->value() : "";
+    nextUser.trim();
+    nextPass.trim();
+    confirm.trim();
+
+    bool wantsUserChange = nextUser.length() > 0;
+    bool wantsPassChange = nextPass.length() > 0 || confirm.length() > 0 || current.length() > 0;
+    if (!wantsUserChange && !wantsPassChange) {
+      request->send(400, "application/json", "{\"error\":\"No changes provided\"}");
+      return;
+    }
+
+    if (wantsUserChange && !isLoginBaseUsernameValid(nextUser)) {
+      request->send(400, "application/json", "{\"error\":\"Username must be 3-32 chars using only A-Z, a-z, 0-9, _ or -\"}");
+      return;
+    }
+
+    if (wantsPassChange) {
+      if (current != getLoginPassword()) {
+        request->send(400, "application/json", "{\"error\":\"Current password is incorrect\"}");
+        return;
+      }
+      if (nextPass.length() < 6 || nextPass.length() > 32) {
+        request->send(400, "application/json", "{\"error\":\"New password must be 6-32 characters\"}");
+        return;
+      }
+      if (nextPass != confirm) {
+        request->send(400, "application/json", "{\"error\":\"New password and confirm password do not match\"}");
+        return;
+      }
+    }
+
+    if (wantsUserChange && !saveLoginBaseUsername(nextUser)) {
+      request->send(500, "application/json", "{\"error\":\"Failed to save username\"}");
+      return;
+    }
+    if (wantsPassChange && !saveLoginPassword(nextPass)) {
+      request->send(500, "application/json", "{\"error\":\"Failed to save password\"}");
+      return;
+    }
+    request->send(200, "application/json", "{\"success\":true}");
+  });
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (!isAuthenticated(request)) {
       sendRedirect(request, "/login");
@@ -879,7 +1033,7 @@ static void setupWebServerRoutes() {
   serverRoutesSetup = true;
 }
 
-static void startAPMode() {
+void startAPMode() {
   if (Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Starting Access Point...");
@@ -889,10 +1043,7 @@ static void startAPMode() {
   IPAddress gateway(10, 10, 10, 10);
   IPAddress subnet(255, 255, 255, 0);
   WiFi.softAPConfig(apIP, gateway, subnet);
-  String serial = readSerialNumber();
-  if (serial.length() == 0) serial = "UNSET";
-  String ssid = "MSys-" + serial;
-  WiFi.softAP(ssid.c_str(), "12345678");
+  WiFi.softAP("ESP32_FileServer", "12345678");
   delay(200);
 
   Serial.print("[AP] AP IP address: ");
@@ -902,7 +1053,7 @@ static void startAPMode() {
   Serial.println("[AP] Access Point is now active");
 }
 
-static void stopAPMode() {
+void stopAPMode() {
   if (!Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Stopping Access Point...");
@@ -949,7 +1100,7 @@ void AP_taskLoop(void *pvParameters) {
   }
 }
 
-static String htmlPage() {
+String htmlPage() {
   return R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -1018,6 +1169,7 @@ static String htmlPage() {
 
   <div class="actions">
     <button class="primary" onclick="openGatewayConfig()">Gateway Settings</button>
+    <button class="primary" onclick="changeCredentials()">Change Login Credentials</button>
     <button class="danger"   onclick="logout()">Logout</button>
   </div>
 
@@ -1131,15 +1283,24 @@ function phone(num) {
 
 function renderTable(rows) {
   var tbody = document.getElementById('table-body');
-  document.getElementById('count-badge').textContent = rows.length;
+  var safeRows = Array.isArray(rows) ? rows : [];
+  safeRows = safeRows.filter(function(r) {
+    if (!r) return false;
+    var hasText = typeof r.text === 'string' && r.text.trim() !== '';
+    var hasPhone = Array.isArray(r.phones) && r.phones.some(function(p) {
+      return typeof p === 'string' && p.trim() !== '';
+    });
+    return hasText || hasPhone;
+  });
+  document.getElementById('count-badge').textContent = safeRows.length;
 
-  if (!rows || rows.length === 0) {
+  if (safeRows.length === 0) {
     tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No entries loaded. Upload a MBmapconf.csv file.</td></tr>';
     return;
   }
 
   var html = '';
-  rows.forEach(function(r) {
+  safeRows.forEach(function(r) {
     html += '<tr>';
     html += '<td class="no-col">' + r.no + '</td>';
     for (var p = 0; p < 5; p++) {
@@ -1224,6 +1385,48 @@ function openGatewayConfig() {
   window.location.href = '/gateway-config';
 }
 
+function changeCredentials() {
+  var nextUser = prompt('Enter new username base (leave blank to keep current):');
+  if (nextUser === null) return;
+
+  var changePass = confirm('Do you want to change password now?');
+  var current = '';
+  var next = '';
+  var confirmPass = '';
+  if (changePass) {
+    current = prompt('Enter current password:');
+    if (current === null) return;
+    next = prompt('Enter new password (6-32 chars):');
+    if (next === null) return;
+    confirmPass = prompt('Confirm new password:');
+    if (confirmPass === null) return;
+  }
+
+  var p = new URLSearchParams();
+  p.append('new_username', nextUser);
+  p.append('current_password', current);
+  p.append('new_password', next);
+  p.append('confirm_password', confirmPass);
+
+  fetch('/api/change-credentials', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body: p.toString()
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.success) {
+      setStatus('Login credentials updated successfully.', 'ok');
+      loadDashboard();
+    } else {
+      setStatus('Credential update failed: ' + (d.error || 'unknown error'), 'err');
+    }
+  })
+  .catch(function(err) {
+    setStatus('Credential update failed: ' + err.message, 'err');
+  });
+}
+
 // Load table on page open
 loadDashboard();
 loadTable();
@@ -1232,3 +1435,4 @@ loadTable();
 </html>
 )rawliteral";
 }
+

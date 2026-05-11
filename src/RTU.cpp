@@ -19,13 +19,13 @@ void RTU_init() {
 
   Serial2.begin(settings.baudRate, serialCfg, RXD2, TXD2);
   mbRTU.begin(&Serial2);
-  mbRTU.slave(settings.slaveId); //setting.slaveID is declared in Shared.h as part of "GatewaySettings" struct, so why use "settings" here instead of "GatewaySettings"? because we need to get the actual value of slaveId from the loaded settings, not just refer to the type definition. "settings" is an instance of "GatewaySettings" that holds the current configuration values, including slaveId, which we need to pass to mbRTU.slave() to set the Modbus RTU slave ID correctly. settings is a variable of type "GatewaySettings" that holds the current configuration values which is declared at the beginning of this function and populated by calling Shared_getGatewaySettings(settings).
+  mbRTU.slave(settings.slaveId);
 
   for (uint16_t i = 0; i < HOLDING_REGISTER_COUNT; ++i) mbRTU.addHreg(i, 0);
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT;   ++i) mbRTU.addIreg(i, 0);
 }
 
-static void RTU_process() {
+void RTU_process() {
   mbRTU.task();
 }
 
@@ -36,7 +36,7 @@ static void RTU_process() {
 // last saw. This prevents RTU from clobbering a value TCP wrote and vice
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
-static void RTU_syncFrom() {
+void RTU_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t rtuVal  = mbRTU.Hreg(TRIGGER_REGISTER_START + i);
     uint16_t lastSeen = 0;  
@@ -55,7 +55,7 @@ static void RTU_syncFrom() {
 // This prevents the clobber race where TCP_syncFrom mistakes RTU's mirror
 // write as a new TCP master write.
 // ---------------------------------------------------------------------------
-static void RTU_syncTo() {
+void RTU_syncTo() {
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
