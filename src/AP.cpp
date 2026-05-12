@@ -873,7 +873,7 @@ void startAPMode() {
 
   Serial.println("[AP] Starting Access Point...");
   WiFi.mode(WIFI_AP_STA);
-  delay(50);
+  delay(100);  // Increased delay to let WiFi/Ethernet stack stabilize after mode change
   IPAddress apIP(10, 10, 10, 10);
   IPAddress gateway(10, 10, 10, 10);
   IPAddress subnet(255, 255, 255, 0);
@@ -900,7 +900,7 @@ void stopAPMode() {
   WiFi.softAPdisconnect(true);
   // Keep STA mode alive so Web UI on Ethernet remains available.
   WiFi.mode(WIFI_STA);
-  delay(100);
+  delay(200);  // Increased delay to let WiFi/Ethernet stack stabilize after mode change
 
   Shared_setAPModeActive(false);
   Serial.println("[AP] Access Point is now disabled");

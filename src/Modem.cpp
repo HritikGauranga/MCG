@@ -7,6 +7,8 @@ bool modemReady = false;
 static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
 static unsigned long lastNotReadyLogMs = 0;
+static bool simMissingLatched = false;
+static unsigned long lastSimRecheckMs = 0;
 
 // ---------------------------------------------------------------------------
 // Serial AT helpers
@@ -66,6 +68,7 @@ String sendAT(const String &cmd, int timeout) {
 bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
+  simMissingLatched = (sim.indexOf("SIM not inserted") != -1);
   Shared_writeInputRegister(SIM_STATUS_REGISTER,
     ready ? (int16_t)STATE_READY : (int16_t)STATE_ERROR);
   return ready;
@@ -210,6 +213,7 @@ void initModem() {
 
   if (res.indexOf("OK") == -1) {
     modemReady = false;
+    simMissingLatched = false;
     updateModemState((int16_t)STATE_ERROR, (int16_t)STATE_UNKNOWN, (int16_t)STATE_UNKNOWN);
     Serial.println("[MODEM] No modem response after power ON");
     return;
@@ -349,21 +353,44 @@ void Modem_task(void *pvParameters) {
     if (takeNextPendingSlot(slotToProcess)) {
       if (!modemReady) {
         unsigned long now = millis();
-        if (now - lastReinitAttemptMs >= 12000) {
+
+        // If SIM is physically missing, avoid repeated modem power cycling.
+        // Continuous retries can destabilize shared power/SPI peripherals.
+        if (simMissingLatched) {
+          if (now - lastSimRecheckMs >= 15000) {
+            lastSimRecheckMs = now;
+            Serial.println("[MODEM] SIM missing - checking CPIN without reinit...");
+            if (modemSimReady()) {
+              Serial.println("[MODEM] SIM detected - waiting for network...");
+              bool networkOk = waitForNetwork();
+              modemReady = networkOk;
+              updateModemState(
+                modemReady ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
+                (int16_t)STATE_READY,
+                networkOk ? (int16_t)STATE_READY : (int16_t)STATE_ERROR
+              );
+              if (modemReady) {
+                simMissingLatched = false;
+                consecutiveModemHealthFailures = 0;
+              }
+            }
+          } else if (now - lastNotReadyLogMs >= 5000) {
+            Serial.println("[MODEM] Not ready - SIM missing, recheck cooldown active");
+            lastNotReadyLogMs = now;
+          }
+        } else if (now - lastReinitAttemptMs >= 12000) {
           Serial.println("[MODEM] Not ready - attempting reinit...");
           lastReinitAttemptMs = now;
           initModem();
-        } else {
+        } else if (now - lastNotReadyLogMs >= 5000) {
           // Rate-limit repetitive cooldown logs to keep serial output readable.
-          if (now - lastNotReadyLogMs >= 5000) {
-            Serial.println("[MODEM] Not ready - reinit cooldown active");
-            lastNotReadyLogMs = now;
-          }
+          Serial.println("[MODEM] Not ready - reinit cooldown active");
+          lastNotReadyLogMs = now;
         }
       }
 
       if (!modemReady) {
-        Shared_writeResultRegister(slotToProcess, STATUS_ERROR_MODEM);
+        Shared_writeResultRegister(slotToProcess, simMissingLatched ? STATUS_ERROR_SIM : STATUS_ERROR_MODEM);
         continue;
       }
 
@@ -374,7 +401,6 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
 
 
 

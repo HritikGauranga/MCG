@@ -11,6 +11,7 @@ const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
 SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
 SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload. Not needed for read-only access from RTU/TCP tasks since they never touch the filesystem directly.
+SemaphoreHandle_t spiMutex        = nullptr; // Protects W5500 SPI access from LittleFS operations during AP web server file serving.
 
 static bool     apModeActive = false;
 static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; // 
@@ -175,6 +176,7 @@ static String ipToString(const uint8_t ip[4]) {
 void Shared_init() {
   if (stateMutex == nullptr)      stateMutex      = xSemaphoreCreateMutex();
   if (filesystemMutex == nullptr) filesystemMutex = xSemaphoreCreateMutex();
+  if (spiMutex == nullptr)        spiMutex        = xSemaphoreCreateMutex();
 }
 
 
@@ -193,6 +195,14 @@ bool Shared_lockFileSystem(TickType_t timeout) {
 
 void Shared_unlockFileSystem() {
   if (filesystemMutex != nullptr) xSemaphoreGive(filesystemMutex);
+}
+
+bool Shared_lockSPI(TickType_t timeout) {
+  return spiMutex != nullptr && xSemaphoreTake(spiMutex, timeout) == pdTRUE;
+}
+
+void Shared_unlockSPI() {
+  if (spiMutex != nullptr) xSemaphoreGive(spiMutex);
 }
 
 

@@ -72,6 +72,7 @@ extern const unsigned long BUTTON_DEBOUNCE_MS;
 
 extern SemaphoreHandle_t stateMutex;
 extern SemaphoreHandle_t filesystemMutex;
+extern SemaphoreHandle_t spiMutex;  // Protects W5500 SPI access from LittleFS operations
 
 // Utility
 String Shared_trimCopy(const String &value);
@@ -84,6 +85,8 @@ bool Shared_lockState(TickType_t timeout = pdMS_TO_TICKS(50));
 void Shared_unlockState();
 bool Shared_lockFileSystem(TickType_t timeout = pdMS_TO_TICKS(500));
 void Shared_unlockFileSystem();
+bool Shared_lockSPI(TickType_t timeout = pdMS_TO_TICKS(10));
+void Shared_unlockSPI();
 
 // Config
 bool   Shared_loadMessageConfig();

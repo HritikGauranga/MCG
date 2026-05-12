@@ -1,4 +1,4 @@
-#include "TCP.h"
+﻿#include "TCP.h"
 #include "Shared.h"
 #include <SPI.h>
 #include <ETH.h>
@@ -20,17 +20,53 @@ static const int ETH_PHY_RST  = 14;
 static const int ETH_W5500_ADDR = 1;
 
 static bool ethInitialized = false;
+static bool dhcpConfigured = false;
+static bool runningOnStaticFallback = false;
+static bool networkReady = false;
+static unsigned long lastDhcpReacquireMs = 0;
+static unsigned long lastLinkCheckMs = 0;
+static constexpr unsigned long DHCP_REACQUIRE_INTERVAL_MS = 30000;
+static constexpr unsigned long ETH_LINK_CHECK_INTERVAL_MS = 5000; // Check link every 5 seconds
+static bool lastKnownLinkState = false;
+static unsigned long lastTcpWorkMs = 0;
+static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
+static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
 static bool isValidIP(const IPAddress &ip) {
   return !(ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0);
+}
+
+static bool isUsableDhcpLease() {
+  if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return false;
+  bool result = ETH.linkUp()
+      && isValidIP(ETH.localIP())
+      && isValidIP(ETH.subnetMask())
+      && isValidIP(ETH.gatewayIP());
+  Shared_unlockSPI();
+  return result;
+}
+
+static bool enableDhcpMode() {
+  IPAddress zero(0, 0, 0, 0);
+  return ETH.config(zero, zero, zero, zero, zero);
 }
 
 static bool waitForEthIP(unsigned long timeoutMs) {
   const unsigned long start = millis();
   while (millis() - start < timeoutMs) {
-    if (ETH.linkUp() && isValidIP(ETH.localIP())) return true;
+    if (!Shared_lockSPI(pdMS_TO_TICKS(2))) {
+      delay(50);
+      continue;
+    }
+    bool hasLink = ETH.linkUp() && isValidIP(ETH.localIP());
+    Shared_unlockSPI();
+    if (hasLink) return true;
     delay(100);
   }
-  return ETH.linkUp() && isValidIP(ETH.localIP());
+  
+  if (!Shared_lockSPI(pdMS_TO_TICKS(2))) return false;
+  bool result = ETH.linkUp() && isValidIP(ETH.localIP());
+  Shared_unlockSPI();
+  return result;
 }
 
 static bool applyStaticEthConfig(const GatewaySettings &settings, const char *reasonTag) {
@@ -62,8 +98,22 @@ static bool applyStaticEthConfig(const GatewaySettings &settings, const char *re
 void TCP_init() {
   GatewaySettings settings = {};
   Shared_getGatewaySettings(settings);
+  dhcpConfigured = settings.useDhcp;
+  runningOnStaticFallback = false;
+  networkReady = false;
+  lastKnownLinkState = false;
+
+  // Harden W5500 bring-up: ensure reset and CS states are clean before ETH.begin().
+  pinMode(ETH_PHY_CS, OUTPUT);
+  digitalWrite(ETH_PHY_CS, HIGH);
+  pinMode(ETH_PHY_RST, OUTPUT);
+  digitalWrite(ETH_PHY_RST, LOW);
+  delay(50);
+  digitalWrite(ETH_PHY_RST, HIGH);
+  delay(250);
 
   SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
+  SPI.setFrequency(8000000); // Safer than high default clocks on long/noisy wiring.
 
   Serial.println("[ETH] Starting Ethernet...");
 
@@ -74,24 +124,28 @@ void TCP_init() {
     ethInitialized = true;
   }
 
-  bool networkReady = false;
+  networkReady = false;
 
   if (ethInitialized && settings.useDhcp) {
     Serial.println("[ETH] DHCP mode");
-    networkReady = waitForEthIP(8000);
+    networkReady = waitForEthIP(8000) && isUsableDhcpLease();
 
     if (!networkReady) {
       Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
       networkReady = applyStaticEthConfig(settings, "DHCP fallback");
+      runningOnStaticFallback = networkReady;
     }
   } else if (ethInitialized) {
     Serial.println("[ETH] Using static IP");
     networkReady = applyStaticEthConfig(settings, "static mode");
   }
+  lastDhcpReacquireMs = millis();
 
+  if (!Shared_lockSPI(pdMS_TO_TICKS(10))) return;
   Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
   Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
   Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+  Shared_unlockSPI();
   Serial.print("[ETH] Modbus TCP Port: ");
   Serial.println(settings.tcpPort);
 
@@ -99,6 +153,15 @@ void TCP_init() {
     Serial.println("[ETH] ERROR: Ethernet not ready, Modbus TCP server not started");
     ethServer = nullptr;
     return;
+  }
+
+  if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+    lastKnownLinkState = ETH.linkUp();
+    networkReady = networkReady && lastKnownLinkState && isValidIP(ETH.localIP());
+    Shared_unlockSPI();
+  } else {
+    lastKnownLinkState = false;
+    networkReady = false;
   }
 
   static WiFiServer serverInstance(settings.tcpPort);
@@ -116,11 +179,104 @@ void TCP_init() {
 }
 
 void TCP_maintainDHCP() {
-  // DHCP renew is handled by lwIP ETH driver internally.
+  if (!ethInitialized || !dhcpConfigured || !runningOnStaticFallback) return;
+  unsigned long now = millis();
+  if (now - lastDhcpReacquireMs < DHCP_REACQUIRE_INTERVAL_MS) return;
+  lastDhcpReacquireMs = now;
+
+  // We are currently on static fallback; explicitly request DHCP first.
+  if (!enableDhcpMode()) {
+    Serial.println("[ETH] DHCP re-acquire failed: unable to enable DHCP mode");
+    return;
+  }
+
+  if (waitForEthIP(4000) && isUsableDhcpLease()) {
+    runningOnStaticFallback = false;
+    networkReady = true;
+    Serial.println("[ETH] DHCP re-acquire success: switched back to DHCP");
+    
+    if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+    Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+    Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+    Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+    Shared_unlockSPI();
+    return;
+  }
+
+  GatewaySettings settings = {};
+  if (Shared_getGatewaySettings(settings)) {
+    networkReady = applyStaticEthConfig(settings, "reassert static fallback");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Link health monitoring — detect when W5500 loses connection and recover
+// ---------------------------------------------------------------------------
+void TCP_monitorEthernetLink() {
+  if (!ethInitialized) return;
+
+  unsigned long now = millis();
+  if (now - lastLinkCheckMs < ETH_LINK_CHECK_INTERVAL_MS) return;
+  lastLinkCheckMs = now;
+
+  // Protect W5500 SPI access from LittleFS operations
+  if (!Shared_lockSPI(pdMS_TO_TICKS(10))) return;
+  
+  bool linkUp = ETH.linkUp();
+  bool hasValidIP = isValidIP(ETH.localIP());
+  
+  Shared_unlockSPI();
+
+  // Link state changed or IP became invalid
+  if (linkUp != lastKnownLinkState || (linkUp && !hasValidIP)) {
+    if (!linkUp) {
+      Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
+      lastKnownLinkState = false;
+      
+      // Close any active client to force reconnection
+      if (clientActive) {
+        activeClient.stop();
+        clientActive = false;
+      }
+      
+      // Attempt to recover the connection
+      GatewaySettings settings = {};
+      if (Shared_getGatewaySettings(settings)) {
+        if (settings.useDhcp) {
+          Serial.println("[ETH] Attempting DHCP recovery...");
+          enableDhcpMode();
+          if (waitForEthIP(5000)) {
+            Serial.println("[ETH] DHCP recovery successful");
+            runningOnStaticFallback = false;
+            networkReady = true;
+            lastDhcpReacquireMs = now;
+          } else {
+            Serial.println("[ETH] DHCP recovery failed, switching to static IP");
+            networkReady = applyStaticEthConfig(settings, "link recovery");
+            runningOnStaticFallback = networkReady;
+          }
+        } else {
+          Serial.println("[ETH] Attempting static IP recovery...");
+          networkReady = applyStaticEthConfig(settings, "link recovery");
+        }
+      }
+    } else if (linkUp && hasValidIP && !lastKnownLinkState) {
+      Serial.println("[ETH] Ethernet link restored");
+      
+      if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+      Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+      Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+      Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+      Shared_unlockSPI();
+      
+      lastKnownLinkState = true;
+      networkReady = true;
+    }
+  }
 }
 
 void TCP_processNetwork() {
-  if (ethServer == nullptr) return;
+  if (ethServer == nullptr || !networkReady || !lastKnownLinkState) return;
 
   if (clientActive) {
     if (!activeClient.connected()) {
@@ -148,6 +304,7 @@ void TCP_processNetwork() {
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
 void TCP_syncFrom() {
+  if (!networkReady || !lastKnownLinkState || !clientActive) return;
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t tcpVal  = (uint16_t)modbusTCPServer.holdingRegisterRead(TRIGGER_REGISTER_START + i);
     uint16_t lastSeen = 0;
@@ -167,6 +324,7 @@ void TCP_syncFrom() {
 // write as a new RTU master write.
 // ---------------------------------------------------------------------------
 void TCP_syncTo() {
+  if (!networkReady || !lastKnownLinkState) return;
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -186,10 +344,19 @@ void TCP_taskLoop(void *pvParameters) {
   (void)pvParameters;
 
   for (;;) {
+    unsigned long now = millis();
+    if (now - lastTcpWorkMs < (clientActive ? TCP_ACTIVE_LOOP_MS : TCP_IDLE_LOOP_MS)) {
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+    lastTcpWorkMs = now;
+
+    TCP_monitorEthernetLink();  // Check link health every 5 seconds
     TCP_processNetwork();
     TCP_syncFrom();
     TCP_syncTo();
     TCP_maintainDHCP();
-    vTaskDelay(pdMS_TO_TICKS(5));
+    
+    vTaskDelay(pdMS_TO_TICKS(clientActive ? 10 : 25));
   }
 }

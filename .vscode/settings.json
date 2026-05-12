@@ -1,3 +1,4 @@
 {
-    "stm32-for-vscode.armToolchainPath": false
+    "stm32-for-vscode.armToolchainPath": false,
+    "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf"
 }
