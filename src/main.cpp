@@ -15,6 +15,36 @@ namespace {
   constexpr uint32_t TCP_TASK_STACK   = 6144;
   constexpr uint32_t MODEM_TASK_STACK = 8192;
   constexpr uint32_t AP_TASK_STACK    = 4096;
+
+  // -------------------------------------------------------------------------
+  // Stack monitor template (kept commented for future testing)
+  //
+  // 1) Uncomment the TaskHandle_t variables below.
+  // 2) Pass these handles in xTaskCreatePinnedToCore(..., &handle, ...).
+  // 3) Uncomment printStackUsage() and call it periodically from loop().
+  //
+  // NOTE: Stack values are in FreeRTOS "words" (not bytes).
+  // -------------------------------------------------------------------------
+  /*
+  TaskHandle_t gSmsTaskHandle = nullptr;
+  TaskHandle_t gRtuTaskHandle = nullptr;
+  TaskHandle_t gTcpTaskHandle = nullptr;
+  TaskHandle_t gApTaskHandle  = nullptr;
+
+  void printStackUsage(const char *name, TaskHandle_t handle, uint32_t configuredWords) {
+    if (handle == nullptr || configuredWords == 0) return;
+
+    UBaseType_t minFreeWords = uxTaskGetStackHighWaterMark(handle); // minimum ever free
+    uint32_t usedWords = configuredWords - (uint32_t)minFreeWords;
+    float headroomPct = (100.0f * (float)minFreeWords) / (float)configuredWords;
+
+    Serial.printf("[STACK] %s used=%lu free=%lu headroom=%.1f%%\n",
+                  name,
+                  (unsigned long)usedWords,
+                  (unsigned long)minFreeWords,
+                  headroomPct);
+  }
+  */
 }
 
 void setup() {
@@ -67,11 +97,23 @@ void setup() {
   xTaskCreatePinnedToCore(RTU_taskLoop, "RTUTask",  RTU_TASK_STACK,   nullptr, 3, nullptr, 1);
   xTaskCreatePinnedToCore(TCP_taskLoop, "TCPTask",  TCP_TASK_STACK,   nullptr, 2, nullptr, 1);
   xTaskCreatePinnedToCore(AP_taskLoop,  "ApTask",   AP_TASK_STACK,    nullptr, 1, nullptr, 1);
+  // Stack monitor ready-to-enable versions:
+  // xTaskCreatePinnedToCore(Modem_task,   "SmsTask",  MODEM_TASK_STACK, nullptr, 2, &gSmsTaskHandle, 0);
+  // xTaskCreatePinnedToCore(RTU_taskLoop, "RTUTask",  RTU_TASK_STACK,   nullptr, 3, &gRtuTaskHandle, 1);
+  // xTaskCreatePinnedToCore(TCP_taskLoop, "TCPTask",  TCP_TASK_STACK,   nullptr, 2, &gTcpTaskHandle, 1);
+  // xTaskCreatePinnedToCore(AP_taskLoop,  "ApTask",   AP_TASK_STACK,    nullptr, 1, &gApTaskHandle, 1);
 
   Serial.println("[SYSTEM] Tasks started: SmsTask, RTUTask, TCPTask, ApTask");
 }
 
 
 void loop() {
+  // Uncomment for periodic stack report during stress tests:
+  // printStackUsage("SmsTask", gSmsTaskHandle, MODEM_TASK_STACK);
+  // printStackUsage("RTUTask", gRtuTaskHandle, RTU_TASK_STACK);
+  // printStackUsage("TCPTask", gTcpTaskHandle, TCP_TASK_STACK);
+  // printStackUsage("ApTask",  gApTaskHandle,  AP_TASK_STACK);
+  // vTaskDelay(pdMS_TO_TICKS(5000));
+
   vTaskDelay(pdMS_TO_TICKS(1000));
 }
