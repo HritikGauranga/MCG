@@ -25,6 +25,8 @@ void setup() {
 
   Shared_init();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(AP_STATUS_LED_PIN, OUTPUT);
+  digitalWrite(AP_STATUS_LED_PIN, LOW);
 
   if (!LittleFS.begin(true)) {
     Serial.println("[ERROR] LittleFS mount failed — halting");

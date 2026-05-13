@@ -200,7 +200,7 @@ void initModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(500);
 
-  updateModemState((int16_t)STATE_BUSY, (int16_t)STATE_UNKNOWN, (int16_t)STATE_UNKNOWN);
+  updateModemState((int16_t)STATE_BUSY, (int16_t)STATE_IDLE, (int16_t)STATE_IDLE);
 
   Serial.println("\n=== Initializing 4G Modem (EC200U) ===");
   modemPowerOn();
@@ -214,7 +214,7 @@ void initModem() {
   if (res.indexOf("OK") == -1) {
     modemReady = false;
     simMissingLatched = false;
-    updateModemState((int16_t)STATE_ERROR, (int16_t)STATE_UNKNOWN, (int16_t)STATE_UNKNOWN);
+    updateModemState((int16_t)STATE_ERROR, (int16_t)STATE_IDLE, (int16_t)STATE_IDLE);
     Serial.println("[MODEM] No modem response after power ON");
     return;
   }
@@ -240,9 +240,9 @@ void initModem() {
 // ---------------------------------------------------------------------------
 bool Modem_init() {
   Shared_writeInputRegister(DEVICE_STATUS_REGISTER,  (int16_t)STATE_READY);
-  Shared_writeInputRegister(MODEM_STATUS_REGISTER,   (int16_t)STATE_UNKNOWN);
-  Shared_writeInputRegister(SIM_STATUS_REGISTER,     (int16_t)STATE_UNKNOWN);
-  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_UNKNOWN);
+  Shared_writeInputRegister(MODEM_STATUS_REGISTER,   (int16_t)STATE_IDLE);
+  Shared_writeInputRegister(SIM_STATUS_REGISTER,     (int16_t)STATE_IDLE);
+  Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_IDLE);
   return true;
 }
 
@@ -355,7 +355,6 @@ void Modem_task(void *pvParameters) {
         unsigned long now = millis();
 
         // If SIM is physically missing, avoid repeated modem power cycling.
-        // Continuous retries can destabilize shared power/SPI peripherals.
         if (simMissingLatched) {
           if (now - lastSimRecheckMs >= 15000) {
             lastSimRecheckMs = now;

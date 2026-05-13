@@ -167,6 +167,45 @@ static String readSerialMeta() {
   return meta;
 }
 
+static void clearStaleSerialForNewBuild() {
+  if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
+    Serial.println("[SERIAL] File system busy, skipping stale serial cleanup");
+    return;
+  }
+
+  String serial = "";
+  String meta = "";
+
+  if (LittleFS.exists(SERIAL_FILE_PATH)) {
+    File sf = LittleFS.open(SERIAL_FILE_PATH, "r");
+    if (sf) {
+      serial = sf.readStringUntil('\n');
+      serial.trim();
+      sf.close();
+    }
+  }
+
+  if (LittleFS.exists(SERIAL_META_PATH)) {
+    File mf = LittleFS.open(SERIAL_META_PATH, "r");
+    if (mf) {
+      meta = mf.readStringUntil('\n');
+      meta.trim();
+      mf.close();
+    }
+  }
+
+  bool hasPreviousSerial = (serial.length() > 0);
+  bool isCurrentBuildMeta = (meta == String(FW_BUILD_TAG_VALUE));
+
+  if (hasPreviousSerial && !isCurrentBuildMeta) {
+    LittleFS.remove(SERIAL_FILE_PATH);
+    LittleFS.remove(SERIAL_META_PATH);
+    Serial.println("[SERIAL] Cleared stale serial for new firmware build");
+  }
+
+  Shared_unlockFileSystem();
+}
+
 static String getLoginUsername() {
   return String(WEBUI_USER);
 }
@@ -269,11 +308,11 @@ static String serialNumberPage(const String &currentSerial, const String &messag
         <button type="submit">Save Serial Number</button>
       </form>
     )rawliteral");
-  } else {
+  } else {  
     formBlock = R"rawliteral(
       <form method="POST" action="/serialnumber/">
         <label for="serial">Serial Number</label>
-        <input id="serial" name="serial" type="text" placeholder="MCG001" required maxlength="32" pattern="[A-Za-z0-9_-]+">
+        <input id="serial" name="serial" type="text" placeholder="e.g. MCG001" required maxlength="32" pattern="[A-Za-z0-9_-]+">
         <button type="submit">Set Serial Number</button>
       </form>
     )rawliteral";
@@ -498,6 +537,7 @@ void printAPStatus() {
   Serial.println("");
   Serial.println("=== AP Mode Info ===");
   Serial.println("To enable AP Mode: Press and hold button on GPIO 33");
+  Serial.println("AP status LED: ON when AP mode is active");
   Serial.println("AP SSID: MSys or MSys-<SerialNumber>");
   Serial.println("AP Password: MSys@1234");
   Serial.println("AP URL: http://10.10.10.10");
@@ -890,6 +930,7 @@ void startAPMode() {
   Serial.println(WiFi.softAPIP());
 
   Shared_setAPModeActive(true);
+  digitalWrite(AP_STATUS_LED_PIN, HIGH);
   Serial.println("[AP] Access Point is now active");
 }
 
@@ -903,6 +944,7 @@ void stopAPMode() {
   delay(200);  // Increased delay to let WiFi/Ethernet stack stabilize after mode change
 
   Shared_setAPModeActive(false);
+  digitalWrite(AP_STATUS_LED_PIN, LOW);
   Serial.println("[AP] Access Point is now disabled");
 }
 
@@ -913,6 +955,9 @@ void AP_taskLoop(void *pvParameters) {
   // Bring up base Wi-Fi stack without connecting, required by Async web stack.
   WiFi.mode(WIFI_STA);
   delay(50);
+
+  // Reset old serial state when firmware build changes.
+  clearStaleSerialForNewBuild();
 
   // Keep Web UI always active (Ethernet IP + AP IP when AP mode is enabled).
   setupWebServerRoutes();

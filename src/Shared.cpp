@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 
 const int BUTTON_PIN   = 33;
+const int AP_STATUS_LED_PIN = 2;
 const int MODEM_RX     = 16;
 const int MODEM_TX     = 17;
 const int MODEM_PWRKEY = 32;
@@ -18,9 +19,9 @@ static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; //
 static int16_t  resultRegs[MESSAGE_SLOT_COUNT]   = {};
 static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
   (int16_t)STATE_READY,
-  (int16_t)STATE_UNKNOWN,
-  (int16_t)STATE_UNKNOWN,
-  (int16_t)STATE_UNKNOWN
+  (int16_t)STATE_IDLE,
+  (int16_t)STATE_IDLE,
+  (int16_t)STATE_IDLE
 };
 static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;

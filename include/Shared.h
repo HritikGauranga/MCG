@@ -28,7 +28,7 @@ enum RegisterStatus : int16_t {
 };
 
 enum RuntimeState : int16_t {
-  STATE_UNKNOWN = 0,
+  STATE_IDLE = 0,
   STATE_READY   = 1,
   STATE_BUSY    = 2,
   STATE_ERROR   = -1
@@ -63,6 +63,7 @@ struct GatewaySettings {
 };
 
 extern const int BUTTON_PIN;
+extern const int AP_STATUS_LED_PIN;
 extern const int MODEM_RX;
 extern const int MODEM_TX;
 extern const int MODEM_PWRKEY;
