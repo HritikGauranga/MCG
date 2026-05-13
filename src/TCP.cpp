@@ -69,14 +69,6 @@ static bool waitForEthIP(unsigned long timeoutMs) {
   return result;
 }
 
-static void logEthAddress() {
-  if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
-  Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
-  Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
-  Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
-  Shared_unlockSPI();
-}
-
 static bool applyStaticEthConfig(const GatewaySettings &settings, const char *reasonTag) {
   IPAddress ip(settings.staticIp[0], settings.staticIp[1], settings.staticIp[2], settings.staticIp[3]);
   IPAddress gw(settings.gatewayIp[0], settings.gatewayIp[1], settings.gatewayIp[2], settings.gatewayIp[3]);
@@ -149,7 +141,11 @@ void TCP_init() {
   }
   lastDhcpReacquireMs = millis();
 
-  logEthAddress();
+  if (!Shared_lockSPI(pdMS_TO_TICKS(10))) return;
+  Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+  Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+  Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+  Shared_unlockSPI();
   Serial.print("[ETH] Modbus TCP Port: ");
   Serial.println(settings.tcpPort);
 
@@ -182,7 +178,7 @@ void TCP_init() {
   Serial.println("[ETH] Modbus TCP server ready");
 }
 
-static void TCP_maintainDHCP() {
+void TCP_maintainDHCP() {
   if (!ethInitialized || !dhcpConfigured || !runningOnStaticFallback) return;
   unsigned long now = millis();
   if (now - lastDhcpReacquireMs < DHCP_REACQUIRE_INTERVAL_MS) return;
@@ -199,7 +195,11 @@ static void TCP_maintainDHCP() {
     networkReady = true;
     Serial.println("[ETH] DHCP re-acquire success: switched back to DHCP");
     
-    logEthAddress();
+    if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+    Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+    Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+    Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+    Shared_unlockSPI();
     return;
   }
 
@@ -212,7 +212,7 @@ static void TCP_maintainDHCP() {
 // ---------------------------------------------------------------------------
 // Link health monitoring — detect when W5500 loses connection and recover
 // ---------------------------------------------------------------------------
-static void TCP_monitorEthernetLink() {
+void TCP_monitorEthernetLink() {
   if (!ethInitialized) return;
 
   unsigned long now = millis();
@@ -232,54 +232,50 @@ static void TCP_monitorEthernetLink() {
     if (!linkUp) {
       Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
       lastKnownLinkState = false;
-      networkReady = false;
       
       // Close any active client to force reconnection
       if (clientActive) {
         activeClient.stop();
         clientActive = false;
       }
-    } else if (linkUp && hasValidIP && !lastKnownLinkState) {
-      Serial.println("[ETH] Ethernet link restored");
-
-      // Re-apply network mode on restore to avoid stale lwIP state.
+      
+      // Attempt to recover the connection
       GatewaySettings settings = {};
-      bool configured = false;
       if (Shared_getGatewaySettings(settings)) {
         if (settings.useDhcp) {
           Serial.println("[ETH] Attempting DHCP recovery...");
-          configured = enableDhcpMode() && waitForEthIP(7000) && isUsableDhcpLease();
-          if (configured) {
+          enableDhcpMode();
+          if (waitForEthIP(5000)) {
+            Serial.println("[ETH] DHCP recovery successful");
             runningOnStaticFallback = false;
+            networkReady = true;
             lastDhcpReacquireMs = now;
           } else {
             Serial.println("[ETH] DHCP recovery failed, switching to static IP");
-            configured = applyStaticEthConfig(settings, "link restore fallback");
-            runningOnStaticFallback = configured;
+            networkReady = applyStaticEthConfig(settings, "link recovery");
+            runningOnStaticFallback = networkReady;
           }
         } else {
           Serial.println("[ETH] Attempting static IP recovery...");
-          configured = applyStaticEthConfig(settings, "link restore");
+          networkReady = applyStaticEthConfig(settings, "link recovery");
         }
       }
-
-      if (configured) {
-        logEthAddress();
-      }
-
-      if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
-        lastKnownLinkState = ETH.linkUp();
-        networkReady = configured && lastKnownLinkState && isValidIP(ETH.localIP());
-        Shared_unlockSPI();
-      } else {
-        lastKnownLinkState = false;
-        networkReady = false;
-      }
+    } else if (linkUp && hasValidIP && !lastKnownLinkState) {
+      Serial.println("[ETH] Ethernet link restored");
+      
+      if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+      Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+      Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+      Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+      Shared_unlockSPI();
+      
+      lastKnownLinkState = true;
+      networkReady = true;
     }
   }
 }
 
-static void TCP_processNetwork() {
+void TCP_processNetwork() {
   if (ethServer == nullptr || !networkReady || !lastKnownLinkState) return;
 
   if (clientActive) {
@@ -307,7 +303,7 @@ static void TCP_processNetwork() {
 // last saw. This prevents TCP from clobbering a value RTU wrote and vice
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
-static void TCP_syncFrom() {
+void TCP_syncFrom() {
   if (!networkReady || !lastKnownLinkState || !clientActive) return;
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t tcpVal  = (uint16_t)modbusTCPServer.holdingRegisterRead(TRIGGER_REGISTER_START + i);
@@ -327,7 +323,7 @@ static void TCP_syncFrom() {
 // This prevents the clobber race where RTU_syncFrom mistakes TCP's mirror
 // write as a new RTU master write.
 // ---------------------------------------------------------------------------
-static void TCP_syncTo() {
+void TCP_syncTo() {
   if (!networkReady || !lastKnownLinkState) return;
   SystemSnapshot snapshot = Shared_getSnapshot();
 

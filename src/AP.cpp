@@ -299,7 +299,7 @@ static String serialNumberPage(const String &currentSerial, const String &messag
 
   String formBlock = "";
   if (currentSerial.length() > 0 && isSerialLockedForCurrentBuild()) {
-    formBlock = "<div class='locked'>Serial Number is locked for this firmware build: <strong>" + currentSerial + "</strong></div>";
+    formBlock = "<div class='locked'>Serial Number is <strong>" + currentSerial + "</strong></div>";
   } else if (currentSerial.length() > 0) {
     formBlock = "<div class='status ok'>Previous serial found: <strong>" + currentSerial + "</strong>. You can overwrite it once for this new firmware upload.</div>" + String(R"rawliteral(
       <form method="POST" action="/serialnumber/">
@@ -536,9 +536,12 @@ void printMBMapSummary() {
 void printAPStatus() {
   Serial.println("");
   Serial.println("=== AP Mode Info ===");
-  Serial.println("AP switch: GPIO33 (LOW = AP ON)");
+  Serial.println("To enable AP Mode: Press and hold button on GPIO 33");
   Serial.println("AP status LED: ON when AP mode is active");
-  Serial.println("AP IP: 10.10.10.10");
+  Serial.println("AP SSID: MSys or MSys-<SerialNumber>");
+  Serial.println("AP Password: MSys@1234");
+  Serial.println("AP URL: http://10.10.10.10");
+  Serial.println("Note: AP mode not active by default");
 }
 
 // ---------------------------------------------------------------------------
@@ -921,6 +924,8 @@ void startAPMode() {
 
   Serial.print("[AP] SSID: ");
   Serial.println(ssid);
+  Serial.print("[AP] Password: ");
+  Serial.println(AP_PASS_FIXED);
   Serial.print("[AP] AP IP address: ");
   Serial.println(WiFi.softAPIP());
 

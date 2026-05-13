@@ -25,7 +25,7 @@ void RTU_init() {
   for (uint16_t i = 0; i < INPUT_REGISTER_COUNT;   ++i) mbRTU.addIreg(i, 0);
 }
 
-static void RTU_process() {
+void RTU_process() {
   mbRTU.task();
 }
 
@@ -36,7 +36,7 @@ static void RTU_process() {
 // last saw. This prevents RTU from clobbering a value TCP wrote and vice
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
-static void RTU_syncFrom() {
+void RTU_syncFrom() {
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t rtuVal  = mbRTU.Hreg(TRIGGER_REGISTER_START + i);
     uint16_t lastSeen = 0;  
@@ -55,7 +55,7 @@ static void RTU_syncFrom() {
 // This prevents the clobber race where TCP_syncFrom mistakes RTU's mirror
 // write as a new TCP master write.
 // ---------------------------------------------------------------------------
-static void RTU_syncTo() {
+void RTU_syncTo() {
   SystemSnapshot snapshot = Shared_getSnapshot();
 
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {

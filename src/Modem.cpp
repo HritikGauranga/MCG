@@ -50,20 +50,22 @@ static bool isLikelyValidPhoneNumber(const String &number) {
 // ---------------------------------------------------------------------------
 // AT command
 // ---------------------------------------------------------------------------
-static String sendAT(const String &cmd, int timeout) {
+String sendAT(const String &cmd, int timeout) {
   while (SerialAT.available()) SerialAT.read();
 
+  Serial.println("[AT] >> " + cmd);
   SerialAT.println(cmd);
   delay(100);
 
   String response = readSerialATResponse((unsigned long)timeout);
+  Serial.println(response.length() ? "[AT] << " + response : "[AT] << [NO RESPONSE]");
   return response;
 }
 
 // ---------------------------------------------------------------------------
 // Modem checks
 // ---------------------------------------------------------------------------
-static bool modemSimReady() {
+bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   simMissingLatched = (sim.indexOf("SIM not inserted") != -1);
@@ -72,7 +74,7 @@ static bool modemSimReady() {
   return ready;
 }
 
-static bool waitForNetwork() {
+bool waitForNetwork() {
   for (int i = 0; i < 10; ++i) {
     String res = sendAT("AT+CREG?", 2000);
     if (res.indexOf("0,1") != -1 || res.indexOf("0,5") != -1) {
@@ -80,6 +82,7 @@ static bool waitForNetwork() {
       Serial.println("[MODEM] Network registered");
       return true;
     }
+    Serial.printf("[MODEM] Waiting for network... (%d/10)\n", i + 1);
     delay(2000);
   }
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_ERROR);
@@ -90,7 +93,7 @@ static bool waitForNetwork() {
 // ---------------------------------------------------------------------------
 // sendSMS — two-step AT+CMGS exchange
 // ---------------------------------------------------------------------------
-static bool sendSMS(const String &number, const String &message) {
+bool sendSMS(const String &number, const String &message) {
   if (!modemReady) {
     Serial.println("[SMS] ERROR: Modem not ready");
     return false;
@@ -119,6 +122,7 @@ static bool sendSMS(const String &number, const String &message) {
   sendAT("AT+CSMP=17,167,0,0", 2000);
   sendAT("AT+CMGF=1",          2000);
 
+  Serial.printf("[SMS] Sending to %s\n", number.c_str());
   while (SerialAT.available()) SerialAT.read();
 
   SerialAT.print("AT+CMGS=\"");
@@ -126,6 +130,7 @@ static bool sendSMS(const String &number, const String &message) {
   SerialAT.println("\"");
 
   String prompt = readSerialATResponse(5000);
+  Serial.printf("[SMS] CMGS prompt: %s\n", prompt.c_str());
 
   if (prompt.indexOf(">") == -1) {
     Serial.println("[SMS] No '>' prompt received - aborting");
@@ -146,6 +151,7 @@ static bool sendSMS(const String &number, const String &message) {
   SerialAT.write(26);
 
   String res = readSerialATResponse(15000);
+  Serial.printf("[SMS] CMGS result: %s\n", res.c_str());
 
   bool ok = res.indexOf("+CMGS:") != -1 && res.indexOf("ERROR") == -1;
   if (ok) {
@@ -190,7 +196,7 @@ static void modemPowerOn() {
 // ---------------------------------------------------------------------------
 // initModem
 // ---------------------------------------------------------------------------
-static void initModem() {
+void initModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(500);
 
@@ -300,6 +306,7 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
       if (previousState[i] && lowStableCount[i] >= LOW_REARM_SCANS) {
         Shared_writeResultRegister(i, STATUS_IDLE);
         previousState[i] = false;
+        Serial.printf("[EDGE] Slot %u cleared (trigger -> 0)\n", (unsigned)i);
       }
       continue;
     }
@@ -393,6 +400,7 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
+
 
 
 
