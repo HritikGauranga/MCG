@@ -536,12 +536,9 @@ void printMBMapSummary() {
 void printAPStatus() {
   Serial.println("");
   Serial.println("=== AP Mode Info ===");
-  Serial.println("To enable AP Mode: Press and hold button on GPIO 33");
+  Serial.println("AP switch: GPIO33 (LOW = AP ON)");
   Serial.println("AP status LED: ON when AP mode is active");
-  Serial.println("AP SSID: MSys or MSys-<SerialNumber>");
-  Serial.println("AP Password: MSys@1234");
-  Serial.println("AP URL: http://10.10.10.10");
-  Serial.println("Note: AP mode not active by default");
+  Serial.println("AP IP: 10.10.10.10");
 }
 
 // ---------------------------------------------------------------------------
@@ -924,8 +921,6 @@ void startAPMode() {
 
   Serial.print("[AP] SSID: ");
   Serial.println(ssid);
-  Serial.print("[AP] Password: ");
-  Serial.println(AP_PASS_FIXED);
   Serial.print("[AP] AP IP address: ");
   Serial.println(WiFi.softAPIP());
 
