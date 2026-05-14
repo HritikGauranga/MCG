@@ -32,8 +32,11 @@ static constexpr unsigned long ETH_LINK_CHECK_INTERVAL_MS = 5000; // Check link 
 static constexpr unsigned long DHCP_INITIAL_WAIT_MS = 20000;
 static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
+static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
 static bool lastKnownLinkState = false;
 static uint8_t dhcpReacquireFailCount = 0;
+static bool hadDhcpLeaseSinceBoot = false;
+static unsigned long networkDegradedSinceMs = 0;
 static unsigned long lastTcpWorkMs = 0;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
@@ -192,6 +195,8 @@ void TCP_init() {
       Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
       networkReady = applyStaticEthConfig(settings, "DHCP fallback");
       runningOnStaticFallback = networkReady;
+    } else {
+      hadDhcpLeaseSinceBoot = true;
     }
   } else if (ethInitialized) {
     Serial.println("[ETH] Using static IP");
@@ -252,6 +257,8 @@ void TCP_maintainDHCP() {
   if (waitForEthIP(DHCP_REACQUIRE_WAIT_MS) && isUsableDhcpLease()) {
     runningOnStaticFallback = false;
     networkReady = true;
+    hadDhcpLeaseSinceBoot = true;
+    networkDegradedSinceMs = 0;
     dhcpReacquireFailCount = 0;
     Serial.println("[ETH] DHCP re-acquire success: switched back to DHCP");
     
@@ -273,6 +280,8 @@ void TCP_maintainDHCP() {
     if (reinitializeEthStackForDhcp()) {
       runningOnStaticFallback = false;
       networkReady = true;
+      hadDhcpLeaseSinceBoot = true;
+      networkDegradedSinceMs = 0;
       lastKnownLinkState = true;
       dhcpReacquireFailCount = 0;
 
@@ -326,6 +335,7 @@ void TCP_monitorEthernetLink() {
     if (!linkUp) {
       Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
       lastKnownLinkState = false;
+      if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       
       // Close any active client to force reconnection
       if (clientActive) {
@@ -343,17 +353,29 @@ void TCP_monitorEthernetLink() {
             Serial.println("[ETH] DHCP recovery successful");
             runningOnStaticFallback = false;
             networkReady = true;
+            hadDhcpLeaseSinceBoot = true;
+            networkDegradedSinceMs = 0;
             lastDhcpReacquireMs = now;
           } else {
-            Serial.println("[ETH] DHCP recovery failed, switching to static IP");
-            networkReady = applyStaticEthConfig(settings, "link recovery");
-            runningOnStaticFallback = networkReady;
+            unsigned long degradedMs = (networkDegradedSinceMs == 0) ? 0 : (now - networkDegradedSinceMs);
+            if (!hadDhcpLeaseSinceBoot || degradedMs >= DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS) {
+              Serial.println("[ETH] DHCP recovery failed for sustained window, switching to static IP");
+              networkReady = applyStaticEthConfig(settings, "link recovery");
+              runningOnStaticFallback = networkReady;
+            } else {
+              Serial.println("[ETH] DHCP recovery retry window active, holding DHCP mode");
+              networkReady = false;
+            }
           }
         } else {
           Serial.println("[ETH] Attempting static IP recovery...");
           networkReady = applyStaticEthConfig(settings, "link recovery");
         }
       }
+    } else if (linkUp && !hasValidIP) {
+      if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
+      networkReady = false;
+      Serial.println("[ETH] WARNING: Link is up but IP is invalid, waiting for DHCP recovery");
     } else if (linkUp && hasValidIP && !lastKnownLinkState) {
       Serial.println("[ETH] Ethernet link restored");
       
@@ -366,6 +388,7 @@ void TCP_monitorEthernetLink() {
       
       lastKnownLinkState = true;
       networkReady = true;
+      networkDegradedSinceMs = 0;
     }
   }
 }
