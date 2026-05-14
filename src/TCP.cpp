@@ -4,6 +4,7 @@
 #include <ETH.h>
 #include <WiFi.h>
 #include <ArduinoModbus.h>
+#include <esp_netif.h>
 
 static WiFiServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
@@ -26,11 +27,32 @@ static bool networkReady = false;
 static unsigned long lastDhcpReacquireMs = 0;
 static unsigned long lastLinkCheckMs = 0;
 static constexpr unsigned long DHCP_REACQUIRE_INTERVAL_MS = 30000;
+static constexpr uint8_t DHCP_REACQUIRE_FAILS_BEFORE_REINIT = 3;
 static constexpr unsigned long ETH_LINK_CHECK_INTERVAL_MS = 5000; // Check link every 5 seconds
+static constexpr unsigned long DHCP_INITIAL_WAIT_MS = 20000;
+static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
+static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
 static bool lastKnownLinkState = false;
+static uint8_t dhcpReacquireFailCount = 0;
 static unsigned long lastTcpWorkMs = 0;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
+static bool waitForEthIP(unsigned long timeoutMs);
+static bool isDhcpClientStarted() {
+  esp_netif_t *ethNetif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+  if (ethNetif == nullptr) return false;
+
+  esp_netif_dhcp_status_t status = ESP_NETIF_DHCP_INIT;
+  if (esp_netif_dhcpc_get_status(ethNetif, &status) != ESP_OK) return false;
+  return status == ESP_NETIF_DHCP_STARTED;
+}
+
+static const char *currentEthModeLabel() {
+  if (!dhcpConfigured) return "STATIC";
+  if (runningOnStaticFallback) return "STATIC_FALLBACK";
+  return isDhcpClientStarted() ? "DHCP_ACTIVE" : "DHCP_REQUESTED_NO_CLIENT";
+}
+
 static bool isValidIP(const IPAddress &ip) {
   return !(ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0);
 }
@@ -48,6 +70,42 @@ static bool isUsableDhcpLease() {
 static bool enableDhcpMode() {
   IPAddress zero(0, 0, 0, 0);
   return ETH.config(zero, zero, zero, zero, zero);
+}
+
+static bool reinitializeEthStackForDhcp() {
+  Serial.println("[ETH] DHCP recovery: reinitializing Ethernet stack");
+
+  ETH.end();
+  delay(150);
+
+  pinMode(ETH_PHY_CS, OUTPUT);
+  digitalWrite(ETH_PHY_CS, HIGH);
+  pinMode(ETH_PHY_RST, OUTPUT);
+  digitalWrite(ETH_PHY_RST, LOW);
+  delay(50);
+  digitalWrite(ETH_PHY_RST, HIGH);
+  delay(250);
+
+  SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
+  SPI.setFrequency(8000000);
+
+  if (!ETH.begin(ETH_PHY_W5500, ETH_W5500_ADDR, ETH_PHY_CS, ETH_PHY_IRQ, ETH_PHY_RST, SPI)) {
+    Serial.println("[ETH] DHCP recovery: ETH.begin failed after reinit");
+    return false;
+  }
+
+  if (!enableDhcpMode()) {
+    Serial.println("[ETH] DHCP recovery: unable to enable DHCP after reinit");
+    return false;
+  }
+
+  if (!waitForEthIP(7000) || !isUsableDhcpLease()) {
+    Serial.println("[ETH] DHCP recovery: DHCP still unavailable after reinit");
+    return false;
+  }
+
+  Serial.println("[ETH] DHCP recovery: success after Ethernet reinit");
+  return true;
 }
 
 static bool waitForEthIP(unsigned long timeoutMs) {
@@ -128,7 +186,7 @@ void TCP_init() {
 
   if (ethInitialized && settings.useDhcp) {
     Serial.println("[ETH] DHCP mode");
-    networkReady = waitForEthIP(8000) && isUsableDhcpLease();
+    networkReady = waitForEthIP(DHCP_INITIAL_WAIT_MS) && isUsableDhcpLease();
 
     if (!networkReady) {
       Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
@@ -142,6 +200,7 @@ void TCP_init() {
   lastDhcpReacquireMs = millis();
 
   if (!Shared_lockSPI(pdMS_TO_TICKS(10))) return;
+  Serial.print("[ETH] Mode: ");    Serial.println(currentEthModeLabel());
   Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
   Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
   Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
@@ -190,12 +249,14 @@ void TCP_maintainDHCP() {
     return;
   }
 
-  if (waitForEthIP(4000) && isUsableDhcpLease()) {
+  if (waitForEthIP(DHCP_REACQUIRE_WAIT_MS) && isUsableDhcpLease()) {
     runningOnStaticFallback = false;
     networkReady = true;
+    dhcpReacquireFailCount = 0;
     Serial.println("[ETH] DHCP re-acquire success: switched back to DHCP");
     
     if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+    Serial.print("[ETH] Mode: ");    Serial.println(currentEthModeLabel());
     Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
     Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
     Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
@@ -204,7 +265,40 @@ void TCP_maintainDHCP() {
   }
 
   GatewaySettings settings = {};
+  dhcpReacquireFailCount++;
+  Serial.print("[ETH] DHCP re-acquire attempt failed, count=");
+  Serial.println((unsigned int)dhcpReacquireFailCount);
+
+  if (dhcpReacquireFailCount >= DHCP_REACQUIRE_FAILS_BEFORE_REINIT) {
+    if (reinitializeEthStackForDhcp()) {
+      runningOnStaticFallback = false;
+      networkReady = true;
+      lastKnownLinkState = true;
+      dhcpReacquireFailCount = 0;
+
+      if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+        Serial.print("[ETH] Mode: ");    Serial.println(currentEthModeLabel());
+        Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
+        Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
+        Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
+        Shared_unlockSPI();
+      }
+      return;
+    }
+    dhcpReacquireFailCount = 0;
+  }
+
   if (Shared_getGatewaySettings(settings)) {
+    // Keep the existing fallback IP if it's still valid. Re-configuring static
+    // on every failed DHCP re-acquire can cause avoidable TCP disruptions.
+    if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+      bool hasFallbackIp = ETH.linkUp() && isValidIP(ETH.localIP());
+      Shared_unlockSPI();
+      if (hasFallbackIp) {
+        networkReady = true;
+        return;
+      }
+    }
     networkReady = applyStaticEthConfig(settings, "reassert static fallback");
   }
 }
@@ -245,7 +339,7 @@ void TCP_monitorEthernetLink() {
         if (settings.useDhcp) {
           Serial.println("[ETH] Attempting DHCP recovery...");
           enableDhcpMode();
-          if (waitForEthIP(5000)) {
+          if (waitForEthIP(DHCP_LINK_RECOVERY_WAIT_MS) && isUsableDhcpLease()) {
             Serial.println("[ETH] DHCP recovery successful");
             runningOnStaticFallback = false;
             networkReady = true;
@@ -264,6 +358,7 @@ void TCP_monitorEthernetLink() {
       Serial.println("[ETH] Ethernet link restored");
       
       if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+      Serial.print("[ETH] Mode: ");    Serial.println(currentEthModeLabel());
       Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
       Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
       Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
