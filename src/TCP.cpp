@@ -10,6 +10,7 @@ static WiFiServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
 static WiFiClient      activeClient;
 static bool            clientActive  = false;
+static unsigned long   suppressSyncFromUntilMs = 0;
 
 // W5500 SPI pin map (matches existing wiring in this project)
 static const int ETH_SPI_SCK  = 18;
@@ -33,10 +34,12 @@ static constexpr unsigned long DHCP_INITIAL_WAIT_MS = 20000;
 static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
+static constexpr unsigned long DHCP_INVALID_IP_RETRY_INTERVAL_MS = 15000;
 static bool lastKnownLinkState = false;
 static uint8_t dhcpReacquireFailCount = 0;
 static bool hadDhcpLeaseSinceBoot = false;
 static unsigned long networkDegradedSinceMs = 0;
+static unsigned long lastInvalidIpDhcpRetryMs = 0;
 static unsigned long lastTcpWorkMs = 0;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
@@ -376,6 +379,22 @@ void TCP_monitorEthernetLink() {
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       networkReady = false;
       Serial.println("[ETH] WARNING: Link is up but IP is invalid, waiting for DHCP recovery");
+
+      // Actively re-request DHCP while link is up but lease is invalid.
+      if (dhcpConfigured && (now - lastInvalidIpDhcpRetryMs >= DHCP_INVALID_IP_RETRY_INTERVAL_MS)) {
+        lastInvalidIpDhcpRetryMs = now;
+        Serial.println("[ETH] Attempting DHCP re-acquire for invalid IP state...");
+        if (enableDhcpMode() && waitForEthIP(DHCP_REACQUIRE_WAIT_MS) && isUsableDhcpLease()) {
+          Serial.println("[ETH] DHCP re-acquire successful from invalid IP state");
+          runningOnStaticFallback = false;
+          networkReady = true;
+          hadDhcpLeaseSinceBoot = true;
+          networkDegradedSinceMs = 0;
+          lastKnownLinkState = true;
+          lastDhcpReacquireMs = now;
+          dhcpReacquireFailCount = 0;
+        }
+      }
     } else if (linkUp && hasValidIP && !lastKnownLinkState) {
       Serial.println("[ETH] Ethernet link restored");
       
@@ -410,6 +429,11 @@ void TCP_processNetwork() {
   if (newClient) {
     activeClient = newClient;
     modbusTCPServer.accept(activeClient);
+    // New client sessions can momentarily expose default register values
+    // before our mirror is pushed. Hold syncFrom briefly to avoid writing
+    // transient zeroes back into shared triggers.
+    Shared_updateTCPLastSeenTriggers();
+    suppressSyncFromUntilMs = millis() + 200;
     clientActive = true;
   }
 }
@@ -423,6 +447,7 @@ void TCP_processNetwork() {
 // ---------------------------------------------------------------------------
 void TCP_syncFrom() {
   if (!networkReady || !lastKnownLinkState || !clientActive) return;
+  if ((long)(millis() - suppressSyncFromUntilMs) < 0) return;
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     uint16_t tcpVal  = (uint16_t)modbusTCPServer.holdingRegisterRead(TRIGGER_REGISTER_START + i);
     uint16_t lastSeen = 0;
