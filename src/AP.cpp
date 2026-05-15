@@ -439,8 +439,7 @@ static String gatewaySettingsPage() {
     <div><label>RTU Slave ID</label><input id="slaveId" type="number" min="1" max="247"></div>
     <div><label>RTU Baud Rate</label>
       <select id="baudRate">
-        <option>1200</option><option>2400</option><option>4800</option><option>9600</option>
-        <option>19200</option><option>38400</option><option>57600</option><option>115200</option>
+        <option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option>
       </select>
     </div>
     <div><label>Data Bits</label><select id="dataBits"><option>7</option><option selected>8</option></select></div>
@@ -992,7 +991,7 @@ String htmlPage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MB Map Config</title>
+<title>DASHBOARD</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; background: #f3f5f7; margin: 0; padding: 16px; }
@@ -1050,7 +1049,7 @@ String htmlPage() {
 </head>
 <body>
 <div class="card">
-  <h1>MB Map Config</h1>
+  <h1>DASHBOARD</h1>
 
   <div class="actions">
     <button class="primary" onclick="openGatewayConfig()">Gateway Settings</button>
@@ -1059,7 +1058,7 @@ String htmlPage() {
 
   <div id="status" class="status"></div>
 
-  <div class="section-title">Dashboard</div>
+  <div class="section-title">Current Configuration Status</div>
   <div id="dashboard" class="dashboard-grid">
     <div class="dash-item"><span class="dash-label">Serial Number</span><span id="dash-serial" class="dash-value">Loading...</span></div>
     <div class="dash-item"><span class="dash-label">Login User Name</span><span id="dash-login-user" class="dash-value">Loading...</span></div>
