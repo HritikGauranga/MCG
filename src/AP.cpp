@@ -17,7 +17,6 @@ static const char    *AUTH_COOKIE_VALUE = "ok";
 static const char    *SERIAL_FILE_PATH  = "/serialnumber.txt";
 static const char    *SERIAL_META_PATH  = "/serial_meta.txt";
 static const char    *MBMAP_FILE_PATH   = "/MBmapconf.csv";
-static const char    *MBMAP_BKP_PATH    = "/MBmapconf_backup.csv";
 #ifndef FW_BUILD_TAG
 #define FW_BUILD_TAG __DATE__ " " __TIME__
 #endif
@@ -432,11 +431,11 @@ static String gatewaySettingsPage() {
       <input id="useDhcp" type="checkbox" style="width:auto">
       <label for="useDhcp" style="margin:0">Use DHCP for Ethernet</label>
     </div>
-    <div><label>Static IP</label><input id="staticIp" placeholder="192.168.8.200"></div>
-    <div><label>Subnet Mask</label><input id="subnetMask" placeholder="255.255.255.0"></div>
-    <div><label>Gateway IP</label><input id="gatewayIp" placeholder="192.168.8.1"></div>
-    <div><label>TCP Port</label><input id="tcpPort" type="number" min="1" max="65535"></div>
-    <div><label>RTU Slave ID</label><input id="slaveId" type="number" min="1" max="247"></div>
+    <div><label>Static IP</label><input id="staticIp" placeholder="192.168.8.200" inputmode="numeric" pattern="[0-9.]+" maxlength="15" oninput="sanitizeIpInput(this)"></div>
+    <div><label>Subnet Mask</label><input id="subnetMask" placeholder="255.255.255.0" inputmode="numeric" pattern="[0-9.]+" maxlength="15" oninput="sanitizeIpInput(this)"></div>
+    <div><label>Gateway IP</label><input id="gatewayIp" placeholder="192.168.8.1" inputmode="numeric" pattern="[0-9.]+" maxlength="15" oninput="sanitizeIpInput(this)"></div>
+    <div><label>TCP Port</label><input id="tcpPort" type="number" min="1" max="65535" inputmode="numeric" oninput="sanitizeNumberInput(this)"></div>
+    <div><label>RTU Slave ID</label><input id="slaveId" type="number" min="1" max="254" inputmode="numeric" oninput="sanitizeNumberInput(this)"></div>
     <div><label>RTU Baud Rate</label>
       <select id="baudRate">
         <option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option>
@@ -454,6 +453,20 @@ static String gatewaySettingsPage() {
 </div>
 <script>
 function status(msg, ok){var s=document.getElementById('status');s.textContent=msg;s.className='status '+(ok?'ok':'err');}
+function sanitizeIpInput(el){
+  if(!el) return;
+  var cleaned = el.value.replace(/[^0-9.]/g, '');
+  var parts = cleaned.split('.');
+  if (parts.length > 4) parts = parts.slice(0, 4);
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i].length > 3) parts[i] = parts[i].slice(0, 3);
+  }
+  el.value = parts.join('.');
+}
+function sanitizeNumberInput(el){
+  if(!el) return;
+  el.value = el.value.replace(/[^0-9]/g, '');
+}
 function loadCfg(){
   fetch('/api/gateway-settings').then(r=>r.json()).then(c=>{
     document.getElementById('useDhcp').checked=!!c.use_dhcp;
@@ -504,20 +517,6 @@ void ensureMBMapConfigFile() {
       f.println("4, 8149979689, , , , 7111111111, ALARM: Pump oil Temperature is back to normal.");
       f.println("5, 8149979689, , , , , ALARM: Speed is HIGH!");
       f.println("6, , , , , , Return to normal: Speed is back to normal.");
-      f.close();
-    }
-  }
-
-  if (!LittleFS.exists(MBMAP_BKP_PATH)) {
-    File f = LittleFS.open(MBMAP_BKP_PATH, "w");
-    if (f) {
-      f.println("Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message");
-      f.println("1,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 1");
-      f.println("2,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 2");
-      f.println("3,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 3");
-      f.println("4,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 4");
-      f.println("5,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 5");
-      f.println("6,0000000000, 0000000000, 0000000000, 0000000000, 0000000000, CUSTOM MSG 6");
       f.close();
     }
   }
@@ -712,15 +711,21 @@ void setupWebServerRoutes() {
     Shared_getGatewaySettings(s);
 
     s.useDhcp = (val("use_dhcp") == "1");
-    s.tcpPort = (uint16_t)val("tcp_port").toInt();
-    s.slaveId = (uint8_t)val("slave_id").toInt();
+    String tcpPortText = val("tcp_port");
+    String slaveIdText = val("slave_id");
+    if (tcpPortText.startsWith("-") || slaveIdText.startsWith("-")) {
+      request->send(400, "application/json", "{\"error\":\"Negative values are not allowed\"}");
+      return;
+    }
+    s.tcpPort = (uint16_t)tcpPortText.toInt();
+    s.slaveId = (uint8_t)slaveIdText.toInt();
     s.baudRate = (uint32_t)val("baud_rate").toInt();
     s.dataBits = (uint8_t)val("data_bits").toInt();
     String parity = val("parity");
     s.parity = parity.length() > 0 ? parity.charAt(0) : 'N';
     s.stopBits = (uint8_t)val("stop_bits").toInt();
 
-    if (s.tcpPort == 0 || s.slaveId < 1 || s.slaveId > 247 ||
+    if (s.tcpPort == 0 || s.slaveId < 1 || s.slaveId > 254 ||
         !(s.dataBits == 7 || s.dataBits == 8) ||
         !(s.parity == 'N' || s.parity == 'E' || s.parity == 'O') ||
         !(s.stopBits == 1 || s.stopBits == 2)) {
@@ -810,25 +815,6 @@ void setupWebServerRoutes() {
     request->send(LittleFS, MBMAP_FILE_PATH, "text/csv", true);
   });
 
-  server.on("/api/download-csv/mbmapconf-backup", HTTP_GET, [](AsyncWebServerRequest *request) {
-    if (!isAuthenticated(request)) {
-      request->send(401, "text/plain", "Unauthorized");
-      return;
-    }
-    if (!Shared_lockFileSystem()) {
-      request->send(503, "text/plain", "File system busy");
-      return;
-    }
-    bool exists = LittleFS.exists(MBMAP_BKP_PATH);
-    Shared_unlockFileSystem();
-
-    if (!exists) {
-      request->send(404, "text/plain", "Backup file not found");
-      return;
-    }
-    request->send(LittleFS, MBMAP_BKP_PATH, "text/csv", true);
-  });
-
   server.on(
     "/api/upload-csv/mbmapconf",
     HTTP_POST,
@@ -839,7 +825,11 @@ void setupWebServerRoutes() {
         if (!index) request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
         return;
       }
-      (void)filename;
+      if (!index && filename != "MBmapconf.csv") {
+        request->send(400, "application/json",
+                      "{\"error\":\"Invalid file name. Use exactly MBmapconf.csv\"}");
+        return;
+      }
 
       if (!index) {
         if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) {
@@ -1084,7 +1074,6 @@ String htmlPage() {
   <div class="actions">
     <button class="primary"  onclick="document.getElementById('file').click()">&#8593; Upload CSV</button>
     <button class="primary"  onclick="downloadCSV()">&#8595; Download CSV</button>
-    <button class="primary"  onclick="downloadBackupCSV()">&#8595; Download Backup CSV</button>
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
   </div>
   <p id="upload-note" class="note hidden"><strong>Note:</strong> CSV uploaded successfully. Please verify all phone numbers in <strong>Loaded Entries</strong>. Invalid or non-existent numbers can cause SMS send failures.</p>
@@ -1210,13 +1199,15 @@ function downloadCSV() {
   window.open('/api/download-csv/mbmapconf');
 }
 
-function downloadBackupCSV() {
-  window.open('/api/download-csv/mbmapconf-backup');
-}
-
 function uploadFile() {
   var file = document.getElementById('file').files[0];
   if (!file) return;
+  if (file.name !== 'MBmapconf.csv') {
+    showUploadNote(false);
+    setStatus('Invalid file name. Please upload/rename the file exactly named as MBmapconf.csv', 'err');
+    document.getElementById('file').value = '';
+    return;
+  }
 
   setStatus('Uploading...', 'inf');
 
