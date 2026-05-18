@@ -24,7 +24,7 @@ FT232 Connection
 ESP32 GPIO  |  FT232    |      Discreption
 GND         |   GND     |    GND of ESp32 to GND of FT232
 Pin SD3     |   RX      |   Pin SD3(Tx) of ESP32 to RX of FT232
-Pin SD3     |   TX      |   Pin SD2(Rx) of ESP32 to TX of FT232
+Pin SD2     |   TX      |   Pin SD2(Rx) of ESP32 to TX of FT232
 
 Latching Switch Connection
 

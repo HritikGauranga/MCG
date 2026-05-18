@@ -51,6 +51,7 @@ static String loginPage(const String &prefilledUser, bool badCredentials = false
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Login</title>
+<link rel="icon" type="image/png" href="/Gaurangalogo.png?v=2">
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef2f7; font-family: Arial, sans-serif; }
@@ -324,6 +325,7 @@ static String serialNumberPage(const String &currentSerial, const String &messag
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Device Serial Number</title>
+<link rel="icon" type="image/png" href="/Gaurangalogo.png?v=2">
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #eef2f7; font-family: Arial, sans-serif; padding: 14px; }
@@ -397,6 +399,7 @@ static String gatewaySettingsPage() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Gateway Settings</title>
+<link rel="icon" type="image/png" href="/Gaurangalogo.png?v=2">
 <style>
   *{box-sizing:border-box}
   body{font-family:Arial,sans-serif;background:#f3f5f7;margin:0;padding:12px}
@@ -466,6 +469,14 @@ function sanitizeIpInput(el){
 function sanitizeNumberInput(el){
   if(!el) return;
   el.value = el.value.replace(/[^0-9]/g, '');
+  if (el.id === 'slaveId') {
+    if (el.value === '') return;
+    var v = parseInt(el.value, 10);
+    if (!Number.isInteger(v)) return;
+    if (v < 1) v = 1;
+    if (v > 254) v = 254;
+    el.value = String(v);
+  }
 }
 function loadCfg(){
   fetch('/api/gateway-settings').then(r=>r.json()).then(c=>{
@@ -482,13 +493,21 @@ function loadCfg(){
   }).catch(e=>status('Load failed: '+e.message,false));
 }
 function saveCfg(){
+  var slaveIdEl = document.getElementById('slaveId');
+  var slaveId = parseInt(slaveIdEl.value, 10);
+  if (!Number.isInteger(slaveId) || slaveId < 1 || slaveId > 254) {
+    status('RTU Slave ID must be between 1 and 254.', false);
+    slaveIdEl.focus();
+    return;
+  }
+
   var p=new URLSearchParams();
   p.append('use_dhcp',document.getElementById('useDhcp').checked?'1':'0');
   p.append('static_ip',document.getElementById('staticIp').value.trim());
   p.append('subnet_mask',document.getElementById('subnetMask').value.trim());
   p.append('gateway_ip',document.getElementById('gatewayIp').value.trim());
   p.append('tcp_port',document.getElementById('tcpPort').value);
-  p.append('slave_id',document.getElementById('slaveId').value);
+  p.append('slave_id',String(slaveId));
   p.append('baud_rate',document.getElementById('baudRate').value);
   p.append('data_bits',document.getElementById('dataBits').value);
   p.append('parity',document.getElementById('parity').value);
@@ -579,6 +598,10 @@ static String buildConfigTableJSON() {
 
 void setupWebServerRoutes() {
   if (serverRoutesSetup) return;
+
+  server.on("/Gaurangalogo.png", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/Gaurangalogo.png", "image/png");
+  });
 
   server.on("/login", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (isAuthenticated(request)) {
@@ -717,16 +740,21 @@ void setupWebServerRoutes() {
       request->send(400, "application/json", "{\"error\":\"Negative values are not allowed\"}");
       return;
     }
-    s.tcpPort = (uint16_t)tcpPortText.toInt();
-    s.slaveId = (uint8_t)slaveIdText.toInt();
+    long tcpPortLong = tcpPortText.toInt();
+    long slaveIdLong = slaveIdText.toInt();
+    if (tcpPortLong < 1 || tcpPortLong > 65535 || slaveIdLong < 1 || slaveIdLong > 254) {
+      request->send(400, "application/json", "{\"error\":\"RTU Slave ID must be 1-254 and TCP Port must be 1-65535\"}");
+      return;
+    }
+    s.tcpPort = (uint16_t)tcpPortLong;
+    s.slaveId = (uint8_t)slaveIdLong;
     s.baudRate = (uint32_t)val("baud_rate").toInt();
     s.dataBits = (uint8_t)val("data_bits").toInt();
     String parity = val("parity");
     s.parity = parity.length() > 0 ? parity.charAt(0) : 'N';
     s.stopBits = (uint8_t)val("stop_bits").toInt();
 
-    if (s.tcpPort == 0 || s.slaveId < 1 || s.slaveId > 254 ||
-        !(s.dataBits == 7 || s.dataBits == 8) ||
+    if (!(s.dataBits == 7 || s.dataBits == 8) ||
         !(s.parity == 'N' || s.parity == 'E' || s.parity == 'O') ||
         !(s.stopBits == 1 || s.stopBits == 2)) {
       request->send(400, "application/json", "{\"error\":\"Invalid RTU/TCP values\"}");
@@ -982,6 +1010,7 @@ String htmlPage() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DASHBOARD</title>
+<link rel="icon" type="image/png" href="/Gaurangalogo.png?v=2">
 <style>
   * { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; background: #f3f5f7; margin: 0; padding: 16px; }
