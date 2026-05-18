@@ -41,9 +41,28 @@ static bool hadDhcpLeaseSinceBoot = false;
 static unsigned long networkDegradedSinceMs = 0;
 static unsigned long lastInvalidIpDhcpRetryMs = 0;
 static unsigned long lastTcpWorkMs = 0;
+static uint16_t configuredTcpPort = 502;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
 static bool waitForEthIP(unsigned long timeoutMs);
+
+static bool ensureModbusServerStarted() {
+  if (ethServer != nullptr) return true;
+  if (!networkReady || !lastKnownLinkState) return false;
+
+  static WiFiServer serverInstance(configuredTcpPort);
+  ethServer = &serverInstance;
+  ethServer->begin();
+  if (!modbusTCPServer.begin()) {
+    Serial.println("[ETH] ERROR: ModbusTCPServer.begin() failed");
+    ethServer = nullptr;
+    return false;
+  }
+  modbusTCPServer.configureHoldingRegisters(0, HOLDING_REGISTER_COUNT);
+  modbusTCPServer.configureInputRegisters(0, INPUT_REGISTER_COUNT);
+  Serial.println("[ETH] Modbus TCP server ready");
+  return true;
+}
 static bool isDhcpClientStarted() {
   esp_netif_t *ethNetif = esp_netif_get_handle_from_ifkey("ETH_DEF");
   if (ethNetif == nullptr) return false;
@@ -162,6 +181,7 @@ static bool applyStaticEthConfig(const GatewaySettings &settings, const char *re
 void TCP_init() {
   GatewaySettings settings = {};
   Shared_getGatewaySettings(settings);
+  configuredTcpPort = settings.tcpPort;
   dhcpConfigured = settings.useDhcp;
   runningOnStaticFallback = false;
   networkReady = false;
@@ -231,18 +251,7 @@ void TCP_init() {
     networkReady = false;
   }
 
-  static WiFiServer serverInstance(settings.tcpPort);
-  ethServer = &serverInstance;
-  ethServer->begin();
-  if (!modbusTCPServer.begin()) {
-    Serial.println("[ETH] ERROR: ModbusTCPServer.begin() failed");
-    ethServer = nullptr;
-    return;
-  }
-  modbusTCPServer.configureHoldingRegisters(0, HOLDING_REGISTER_COUNT);
-  modbusTCPServer.configureInputRegisters(0, INPUT_REGISTER_COUNT);
-
-  Serial.println("[ETH] Modbus TCP server ready");
+  ensureModbusServerStarted();
 }
 
 void TCP_maintainDHCP() {
@@ -397,17 +406,46 @@ void TCP_monitorEthernetLink() {
       }
     } else if (linkUp && hasValidIP && !lastKnownLinkState) {
       Serial.println("[ETH] Ethernet link restored");
-      
+
+      // If DHCP is configured, explicitly re-request it on link restore.
+      // Without this, the stack can remain on a previously applied static IP.
+      if (dhcpConfigured) {
+        bool dhcpRecovered = false;
+        if (enableDhcpMode() &&
+            waitForEthIP(DHCP_LINK_RECOVERY_WAIT_MS) &&
+            isUsableDhcpLease()) {
+          runningOnStaticFallback = false;
+          networkReady = true;
+          hadDhcpLeaseSinceBoot = true;
+          networkDegradedSinceMs = 0;
+          lastDhcpReacquireMs = now;
+          dhcpReacquireFailCount = 0;
+          dhcpRecovered = true;
+          Serial.println("[ETH] DHCP restored after link recovery");
+        } else {
+          GatewaySettings settings = {};
+          if (Shared_getGatewaySettings(settings)) {
+            networkReady = applyStaticEthConfig(settings, "link restore fallback");
+            runningOnStaticFallback = networkReady;
+          } else {
+            networkReady = false;
+          }
+          Serial.println("[ETH] DHCP not available after link recovery, keeping static fallback");
+        }
+        (void)dhcpRecovered;
+      } else {
+        networkReady = true;
+        networkDegradedSinceMs = 0;
+      }
+
       if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
       Serial.print("[ETH] Mode: ");    Serial.println(currentEthModeLabel());
       Serial.print("[ETH] IP: ");      Serial.println(ETH.localIP());
       Serial.print("[ETH] Subnet: ");  Serial.println(ETH.subnetMask());
       Serial.print("[ETH] Gateway: "); Serial.println(ETH.gatewayIP());
       Shared_unlockSPI();
-      
+
       lastKnownLinkState = true;
-      networkReady = true;
-      networkDegradedSinceMs = 0;
     }
   }
 }
@@ -495,6 +533,7 @@ void TCP_taskLoop(void *pvParameters) {
     lastTcpWorkMs = now;
 
     TCP_monitorEthernetLink();  // Check link health every 5 seconds
+    ensureModbusServerStarted();
     TCP_processNetwork();
     TCP_syncFrom();
     TCP_syncTo();
