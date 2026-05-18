@@ -35,16 +35,45 @@ static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
 static constexpr unsigned long DHCP_INVALID_IP_RETRY_INTERVAL_MS = 15000;
+static constexpr uint8_t DHCP_INVALID_IP_FAILS_BEFORE_REINIT = 3;
 static bool lastKnownLinkState = false;
 static uint8_t dhcpReacquireFailCount = 0;
 static bool hadDhcpLeaseSinceBoot = false;
 static unsigned long networkDegradedSinceMs = 0;
 static unsigned long lastInvalidIpDhcpRetryMs = 0;
+static uint8_t invalidIpDhcpFailCount = 0;
 static unsigned long lastTcpWorkMs = 0;
 static uint16_t configuredTcpPort = 502;
+static bool invalidIpStateLogged = false;
+static bool linkDownStateLogged = false;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
 static bool waitForEthIP(unsigned long timeoutMs);
+static const char *currentEthModeLabel();
+
+static void resetTcpServerState(const char *reasonTag) {
+  if (clientActive) {
+    activeClient.stop();
+    clientActive = false;
+  }
+  if (ethServer != nullptr) {
+    ethServer->end();
+    ethServer = nullptr;
+  }
+  Serial.print("[ETH] TCP server reset: ");
+  Serial.println(reasonTag);
+}
+
+static void logRecoveryOutcome(const char *pathTag) {
+  if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
+  Serial.print("[ETH] Recovery(");
+  Serial.print(pathTag);
+  Serial.print("): mode=");
+  Serial.print(currentEthModeLabel());
+  Serial.print(", ip=");
+  Serial.println(ETH.localIP());
+  Shared_unlockSPI();
+}
 
 static bool ensureModbusServerStarted() {
   if (ethServer != nullptr) return true;
@@ -99,6 +128,7 @@ static bool enableDhcpMode() {
 
 static bool reinitializeEthStackForDhcp() {
   Serial.println("[ETH] DHCP recovery: reinitializing Ethernet stack");
+  resetTcpServerState("eth-reinit");
 
   ETH.end();
   delay(150);
@@ -345,15 +375,16 @@ void TCP_monitorEthernetLink() {
   // Link state changed or IP became invalid
   if (linkUp != lastKnownLinkState || (linkUp && !hasValidIP)) {
     if (!linkUp) {
-      Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
+      if (!linkDownStateLogged) {
+        Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
+        linkDownStateLogged = true;
+      }
+      invalidIpStateLogged = false;
       lastKnownLinkState = false;
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       
-      // Close any active client to force reconnection
-      if (clientActive) {
-        activeClient.stop();
-        clientActive = false;
-      }
+      // Reset TCP server/client state so recovery can cleanly rebind.
+      resetTcpServerState("link-down");
       
       // Attempt to recover the connection
       GatewaySettings settings = {};
@@ -368,12 +399,14 @@ void TCP_monitorEthernetLink() {
             hadDhcpLeaseSinceBoot = true;
             networkDegradedSinceMs = 0;
             lastDhcpReacquireMs = now;
+            logRecoveryOutcome("link-lost-dhcp");
           } else {
             unsigned long degradedMs = (networkDegradedSinceMs == 0) ? 0 : (now - networkDegradedSinceMs);
             if (!hadDhcpLeaseSinceBoot || degradedMs >= DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS) {
               Serial.println("[ETH] DHCP recovery failed for sustained window, switching to static IP");
               networkReady = applyStaticEthConfig(settings, "link recovery");
               runningOnStaticFallback = networkReady;
+              if (networkReady) logRecoveryOutcome("link-lost-static-fallback");
             } else {
               Serial.println("[ETH] DHCP recovery retry window active, holding DHCP mode");
               networkReady = false;
@@ -382,12 +415,17 @@ void TCP_monitorEthernetLink() {
         } else {
           Serial.println("[ETH] Attempting static IP recovery...");
           networkReady = applyStaticEthConfig(settings, "link recovery");
+          if (networkReady) logRecoveryOutcome("link-lost-static");
         }
       }
     } else if (linkUp && !hasValidIP) {
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       networkReady = false;
-      Serial.println("[ETH] WARNING: Link is up but IP is invalid, waiting for DHCP recovery");
+      if (!invalidIpStateLogged) {
+        Serial.println("[ETH] WARNING: Link is up but IP is invalid, waiting for DHCP recovery");
+        invalidIpStateLogged = true;
+      }
+      linkDownStateLogged = false;
 
       // Actively re-request DHCP while link is up but lease is invalid.
       if (dhcpConfigured && (now - lastInvalidIpDhcpRetryMs >= DHCP_INVALID_IP_RETRY_INTERVAL_MS)) {
@@ -402,15 +440,51 @@ void TCP_monitorEthernetLink() {
           lastKnownLinkState = true;
           lastDhcpReacquireMs = now;
           dhcpReacquireFailCount = 0;
+          invalidIpDhcpFailCount = 0;
+          invalidIpStateLogged = false;
+          linkDownStateLogged = false;
+          logRecoveryOutcome("invalid-ip-dhcp");
+        } else {
+          invalidIpDhcpFailCount++;
+          Serial.print("[ETH] DHCP re-acquire failed from invalid IP state, count=");
+          Serial.println((unsigned int)invalidIpDhcpFailCount);
+
+          if (invalidIpDhcpFailCount >= DHCP_INVALID_IP_FAILS_BEFORE_REINIT) {
+            Serial.println("[ETH] Invalid-IP DHCP retries exhausted, forcing Ethernet reinit");
+            if (reinitializeEthStackForDhcp()) {
+              runningOnStaticFallback = false;
+              networkReady = true;
+              hadDhcpLeaseSinceBoot = true;
+              networkDegradedSinceMs = 0;
+              lastKnownLinkState = true;
+              lastDhcpReacquireMs = now;
+              dhcpReacquireFailCount = 0;
+              invalidIpDhcpFailCount = 0;
+              invalidIpStateLogged = false;
+              linkDownStateLogged = false;
+              logRecoveryOutcome("invalid-ip-reinit-dhcp");
+            } else {
+              GatewaySettings settings = {};
+              if (Shared_getGatewaySettings(settings)) {
+                networkReady = applyStaticEthConfig(settings, "invalid-ip fallback");
+                runningOnStaticFallback = networkReady;
+                if (networkReady) logRecoveryOutcome("invalid-ip-static-fallback");
+              } else {
+                networkReady = false;
+              }
+              invalidIpDhcpFailCount = 0;
+            }
+          }
         }
       }
     } else if (linkUp && hasValidIP && !lastKnownLinkState) {
       Serial.println("[ETH] Ethernet link restored");
+      linkDownStateLogged = false;
+      invalidIpStateLogged = false;
 
       // If DHCP is configured, explicitly re-request it on link restore.
       // Without this, the stack can remain on a previously applied static IP.
       if (dhcpConfigured) {
-        bool dhcpRecovered = false;
         if (enableDhcpMode() &&
             waitForEthIP(DHCP_LINK_RECOVERY_WAIT_MS) &&
             isUsableDhcpLease()) {
@@ -420,19 +494,19 @@ void TCP_monitorEthernetLink() {
           networkDegradedSinceMs = 0;
           lastDhcpReacquireMs = now;
           dhcpReacquireFailCount = 0;
-          dhcpRecovered = true;
           Serial.println("[ETH] DHCP restored after link recovery");
+          logRecoveryOutcome("link-restored-dhcp");
         } else {
           GatewaySettings settings = {};
           if (Shared_getGatewaySettings(settings)) {
             networkReady = applyStaticEthConfig(settings, "link restore fallback");
             runningOnStaticFallback = networkReady;
+            if (networkReady) logRecoveryOutcome("link-restored-static-fallback");
           } else {
             networkReady = false;
           }
           Serial.println("[ETH] DHCP not available after link recovery, keeping static fallback");
         }
-        (void)dhcpRecovered;
       } else {
         networkReady = true;
         networkDegradedSinceMs = 0;
@@ -463,7 +537,7 @@ void TCP_processNetwork() {
     return;
   }
 
-  WiFiClient newClient = ethServer->available();
+  WiFiClient newClient = ethServer->accept();
   if (newClient) {
     activeClient = newClient;
     modbusTCPServer.accept(activeClient);
