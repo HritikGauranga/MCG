@@ -299,7 +299,13 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
   constexpr uint8_t LOW_REARM_SCANS = 4; // 4 * 25ms ~= 100ms stable low
 
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
-    bool current = snapshot.triggerRegs[i] != 0;
+
+    // Loose trigger semantics: any non-zero value is treated as "active".
+      bool current = snapshot.triggerRegs[i] != 0;
+
+
+    // Strict trigger semantics: only exact value 1 is treated as "active".
+    //bool current = snapshot.triggerRegs[i] == 1;
 
     if (!current) {
       if (lowStableCount[i] < 255) lowStableCount[i]++;
@@ -325,10 +331,17 @@ static bool takeNextPendingSlot(size_t &slotIndex) {
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     if (!pendingSlots[i]) continue;
 
-    if (snapshot.triggerRegs[i] == 0) {
+    // line no. 307 in ModbusTCPServer.cpp shows that the first row of holding registers is all initialized to 0 on server start, so we can rely on 0->1 transition as the trigger without worrying about stale non-zero values from before server start.
+    // this will fire row one if any rising edge is detected, i.e. number greater than 1, so initial value is 0 and writing any positive no. will be considered as rising edge
+     if (snapshot.triggerRegs[i] == 0) {
       pendingSlots[i] = false;
       continue;
     }
+
+    // if (snapshot.triggerRegs[i] != 1) {
+    //   pendingSlots[i] = false;
+    //   continue;
+    // }
 
     slotIndex = i;
     pendingSlots[i] = false;
@@ -400,7 +413,6 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
 
 
 
