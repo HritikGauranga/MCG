@@ -301,11 +301,11 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
 
     // Loose trigger semantics: any non-zero value is treated as "active".
-      bool current = snapshot.triggerRegs[i] != 0;
+    //  bool current = snapshot.triggerRegs[i] != 0;
 
 
     // Strict trigger semantics: only exact value 1 is treated as "active".
-    //bool current = snapshot.triggerRegs[i] == 1;
+    bool current = snapshot.triggerRegs[i] == 1;
 
     if (!current) {
       if (lowStableCount[i] < 255) lowStableCount[i]++;
@@ -333,15 +333,15 @@ static bool takeNextPendingSlot(size_t &slotIndex) {
 
     // line no. 307 in ModbusTCPServer.cpp shows that the first row of holding registers is all initialized to 0 on server start, so we can rely on 0->1 transition as the trigger without worrying about stale non-zero values from before server start.
     // this will fire row one if any rising edge is detected, i.e. number greater than 1, so initial value is 0 and writing any positive no. will be considered as rising edge
-     if (snapshot.triggerRegs[i] == 0) {
-      pendingSlots[i] = false;
-      continue;
-    }
-
-    // if (snapshot.triggerRegs[i] != 1) {
+    //  if (snapshot.triggerRegs[i] == 0) {
     //   pendingSlots[i] = false;
     //   continue;
     // }
+
+    if (snapshot.triggerRegs[i] != 1) {
+      pendingSlots[i] = false;
+      continue;
+    }
 
     slotIndex = i;
     pendingSlots[i] = false;
