@@ -36,12 +36,14 @@ static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
 static constexpr unsigned long DHCP_INVALID_IP_RETRY_INTERVAL_MS = 15000;
 static constexpr uint8_t DHCP_INVALID_IP_FAILS_BEFORE_REINIT = 3;
+static constexpr unsigned long DHCP_HOLDOVER_GRACE_MS = 20000;
 static bool lastKnownLinkState = false;
 static uint8_t dhcpReacquireFailCount = 0;
 static bool hadDhcpLeaseSinceBoot = false;
 static unsigned long networkDegradedSinceMs = 0;
 static unsigned long lastInvalidIpDhcpRetryMs = 0;
 static uint8_t invalidIpDhcpFailCount = 0;
+static unsigned long dhcpHoldoverGraceUntilMs = 0;
 static unsigned long lastTcpWorkMs = 0;
 static uint16_t configuredTcpPort = 502;
 static bool invalidIpStateLogged = false;
@@ -420,7 +422,19 @@ void TCP_monitorEthernetLink() {
       }
     } else if (linkUp && !hasValidIP) {
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
-      networkReady = false;
+      // Hold Modbus service for a short grace window while DHCP re-acquires.
+      // This avoids immediate session drops on brief lease blips.
+      if (dhcpConfigured && hadDhcpLeaseSinceBoot) {
+        if (dhcpHoldoverGraceUntilMs == 0) {
+          dhcpHoldoverGraceUntilMs = now + DHCP_HOLDOVER_GRACE_MS;
+          Serial.print("[ETH] DHCP holdover grace started (ms): ");
+          Serial.println((unsigned long)DHCP_HOLDOVER_GRACE_MS);
+        }
+        bool graceActive = (long)(dhcpHoldoverGraceUntilMs - now) > 0;
+        networkReady = graceActive;
+      } else {
+        networkReady = false;
+      }
       if (!invalidIpStateLogged) {
         Serial.println("[ETH] WARNING: Link is up but IP is invalid, waiting for DHCP recovery");
         invalidIpStateLogged = true;
@@ -443,6 +457,7 @@ void TCP_monitorEthernetLink() {
           invalidIpDhcpFailCount = 0;
           invalidIpStateLogged = false;
           linkDownStateLogged = false;
+          dhcpHoldoverGraceUntilMs = 0;
           logRecoveryOutcome("invalid-ip-dhcp");
         } else {
           invalidIpDhcpFailCount++;
@@ -462,6 +477,7 @@ void TCP_monitorEthernetLink() {
               invalidIpDhcpFailCount = 0;
               invalidIpStateLogged = false;
               linkDownStateLogged = false;
+              dhcpHoldoverGraceUntilMs = 0;
               logRecoveryOutcome("invalid-ip-reinit-dhcp");
             } else {
               GatewaySettings settings = {};
@@ -472,6 +488,7 @@ void TCP_monitorEthernetLink() {
               } else {
                 networkReady = false;
               }
+              dhcpHoldoverGraceUntilMs = 0;
               invalidIpDhcpFailCount = 0;
             }
           }
@@ -481,6 +498,7 @@ void TCP_monitorEthernetLink() {
       Serial.println("[ETH] Ethernet link restored");
       linkDownStateLogged = false;
       invalidIpStateLogged = false;
+      dhcpHoldoverGraceUntilMs = 0;
 
       // If DHCP is configured, explicitly re-request it on link restore.
       // Without this, the stack can remain on a previously applied static IP.
