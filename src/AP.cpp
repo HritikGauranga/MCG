@@ -530,12 +530,12 @@ void ensureMBMapConfigFile() {
     File f = LittleFS.open(MBMAP_FILE_PATH, "w");
     if (f) {
       f.println("Msg.No., Phone number1, Phone number2, Phone number3, Phone number4, Phone number5, Text message");
-      f.println("1, 8149979689, 8655138978, 9030123253, 51856452185, 7111111111, ALARM: Temperature is HIGH!");
-      f.println("2, 8149979689, , 9030123253, 51856452185, 8149979689, ALARM: Pump oil Temperature is HIGH!");
-      f.println("3, 8149979689, , , 51856452185, 7111111111, Return to normal: Temperature is back to normal.");
-      f.println("4, 8149979689, , , , 7111111111, ALARM: Pump oil Temperature is back to normal.");
-      f.println("5, 8149979689, , , , , ALARM: Speed is HIGH!");
-      f.println("6, , , , , , Return to normal: Speed is back to normal.");
+      f.println("1, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, ALARM: Temperature is HIGH!");
+      f.println("2, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, ALARM: Pump oil Temperature is HIGH!");
+      f.println("3, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, Return to normal: Temperature is back to normal.");
+      f.println("4, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, ALARM: Pump oil Temperature is back to normal.");
+      f.println("5, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, ALARM: Speed is HIGH!");
+      f.println("6, 0000000000, 0000000000, 0000000000, 0000000000, 0000000000, Return to normal: Speed is back to normal.");
       f.close();
     }
   }

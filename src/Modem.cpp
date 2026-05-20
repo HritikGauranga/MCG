@@ -38,13 +38,35 @@ static void updateModemState(int16_t modemState, int16_t simState, int16_t netwo
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, networkState);
 }
 
-static bool isLikelyValidPhoneNumber(const String &number) {
-  if (number.length() < 10 || number.length() > 15) return false;
+// Normalize to a modem-safe destination:
+// - keeps a single leading '+' (E.164)
+// - allows digits only after optional '+'
+// - rejects any separators/spaces inside the number
+static bool normalizePhoneNumber(const String &input, String &normalized) {
+  normalized = "";
+  String number = input;
+  number.trim();
+  if (number.length() == 0) return false;
+
+  bool plusSeen = false;
   for (size_t i = 0; i < number.length(); ++i) {
     char c = number.charAt(i);
-    if (c < '0' || c > '9') return false;
+    if (c == '+') {
+      if (i != 0 || plusSeen) return false;
+      plusSeen = true;
+      normalized += c;
+      continue;
+    }
+    if (c >= '0' && c <= '9') {
+      normalized += c;
+      continue;
+    }
+    return false;
   }
-  return true;
+
+  size_t digitStart = (normalized.length() > 0 && normalized.charAt(0) == '+') ? 1 : 0;
+  size_t digitCount = normalized.length() - digitStart;
+  return digitCount >= 10 && digitCount <= 15;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +281,8 @@ static int16_t dispatchMessage(size_t messageIndex) {
   for (size_t i = 0; i < PHONE_SLOTS_PER_MESSAGE; ++i) {
     if (config.phoneNumbers[i][0] == '\0') continue;
     String number = String(config.phoneNumbers[i]);
-    if (!isLikelyValidPhoneNumber(number)) {
+    String normalizedNumber;
+    if (!normalizePhoneNumber(number, normalizedNumber)) {
       Serial.printf("[SMS] Skipping invalid number format: %s\n", number.c_str());
       continue;
     }
@@ -269,7 +292,7 @@ static int16_t dispatchMessage(size_t messageIndex) {
       break;
     }
 
-    if (sendSMS(number, String(config.text))) {
+    if (sendSMS(normalizedNumber, String(config.text))) {
       sentCount++;
     }
   }
@@ -400,7 +423,5 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
-
 
 
