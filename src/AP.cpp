@@ -882,12 +882,24 @@ void setupWebServerRoutes() {
         if (loaded) {
           // Return the parsed table data immediately so the page can
           // refresh the table without a separate fetch
+          String truncatedRows = Shared_getTruncatedMessageRowsCSV();
+          String invalidPhoneWarnings = Shared_getInvalidPhoneWarningsJSON();
+          String faultyMessageRows = Shared_getFaultyMessageRowsCSV();
+          size_t extraRows = Shared_getTruncatedExtraRowCount();
           String body = "{\"success\":true,\"loaded\":" +
                         String((unsigned)Shared_getLoadedMessageCount()) +
+                        ",\"message_limit\":150,\"truncated_rows\":\"" + truncatedRows +
+                        "\",\"faulty_message_rows\":\"" + faultyMessageRows +
+                        "\",\"extra_rows_truncated\":" + String((unsigned)extraRows) +
+                        ",\"invalid_phones\":" + invalidPhoneWarnings +
                         ",\"rows\":" + buildConfigTableJSON() + "}";
           request->send(200, "application/json", body);
         } else {
-          request->send(500, "application/json", "{\"error\":\"Reload failed\"}");
+          String err = Shared_getLastCSVLoadError();
+          if (err.length() == 0) err = "Reload failed";
+          err.replace("\\", "\\\\");
+          err.replace("\"", "\\\"");
+          request->send(400, "application/json", String("{\"error\":\"") + err + "\"}");
         }
       }
     });
@@ -916,8 +928,10 @@ void setupWebServerRoutes() {
       request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
       return;
     }
+    String invalidPhoneWarnings = Shared_getInvalidPhoneWarningsJSON();
     String body = "{\"loaded\":" +
                   String((unsigned)Shared_getLoadedMessageCount()) +
+                  ",\"invalid_phones\":" + invalidPhoneWarnings +
                   ",\"rows\":" + buildConfigTableJSON() + "}";
     request->send(200, "application/json", body);
   });
@@ -1036,6 +1050,13 @@ String htmlPage() {
           background: #fff8e1; border: 1px solid #ffe082; color: #6d4c41;
           font-size: 13px; }
   .note.hidden { display: none; }
+  .upload-warnings { margin: 0 0 12px; padding: 12px; border-radius: 8px;
+                     background: #fff3e0; border-left: 4px solid #ff9800; color: #e65100;
+                     font-size: 13px; }
+  .upload-warnings.error { background: #ffebee; border-left-color: #c62828; color: #b71c1c; }
+  .upload-warnings.hidden { display: none; }
+  .upload-warnings ul { margin: 8px 0 0; padding-left: 20px; }
+  .upload-warnings li { margin: 4px 0; }
   .dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin-bottom: 18px; }
   .dash-item { background: #f8fbff; border: 1px solid #dce8f8; border-radius: 8px; padding: 10px 12px; min-width: 0; }
   .dash-label { display: block; font-size: 12px; color: #5f6c80; margin-bottom: 4px; }
@@ -1053,6 +1074,7 @@ String htmlPage() {
   .phone    { display: inline-block; background: #e8f0fe; color: #1a56db;
               border-radius: 4px; padding: 2px 7px; margin: 2px 2px 2px 0;
               font-size: 12px; white-space: nowrap; }
+  .phone.phone-invalid { background: #ffebee; color: #b71c1c; border: 1px solid #ef9a9a; font-weight: 700; }
   .empty-row td { text-align: center; color: #aaa; padding: 24px; font-style: italic; }
   .count-badge { display: inline-block; background: #e8f0fe; color: #1565c0;
                  border-radius: 20px; padding: 2px 12px; font-size: 13px;
@@ -1074,8 +1096,6 @@ String htmlPage() {
     <button class="primary" onclick="openGatewayConfig()">Gateway Settings</button>
     <button class="danger"   onclick="logout()">Logout</button>
   </div>
-
-  <div id="status" class="status"></div>
 
   <div class="section-title">Current Configuration Status</div>
   <div id="dashboard" class="dashboard-grid">
@@ -1105,6 +1125,7 @@ String htmlPage() {
     <button class="primary"  onclick="downloadCSV()">&#8595; Download CSV</button>
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
   </div>
+  <div id="upload-warnings" class="upload-warnings hidden"></div>
   <p id="upload-note" class="note hidden"><strong>Note:</strong> CSV uploaded successfully. Please verify all phone numbers in <strong>Loaded Entries</strong>. Invalid or non-existent numbers can cause SMS send failures.</p>
 
   <div class="table-wrap">
@@ -1117,7 +1138,7 @@ String htmlPage() {
           <th>Phone 3</th>
           <th>Phone 4</th>
           <th>Phone 5</th>
-          <th class="msg-col">Message Text</th>
+          <th class="msg-col">Text Message</th>
         </tr>
       </thead>
       <tbody id="table-body">
@@ -1132,12 +1153,14 @@ String htmlPage() {
 <script>
 function setStatus(msg, type) {
   var el = document.getElementById('status');
+  if (!el) return;
   el.textContent = msg;
   el.className = 'status ' + type;
 }
 
 function clearStatus() {
   var el = document.getElementById('status');
+  if (!el) return;
   el.className = 'status';
 }
 
@@ -1145,6 +1168,77 @@ function showUploadNote(show) {
   var el = document.getElementById('upload-note');
   if (!el) return;
   el.className = show ? 'note' : 'note hidden';
+}
+
+var latestInvalidPhones = [];
+
+function displayUploadWarnings(data) {
+  var warningsDiv = document.getElementById('upload-warnings');
+  if (!warningsDiv) return;
+  
+  var warnings = [];
+  var truncatedRows = (data.truncated_rows || '').trim();
+  var faultyMessageRows = (data.faulty_message_rows || '').trim();
+  var invalidPhones = Array.isArray(data.invalid_phones) ? data.invalid_phones : [];
+  latestInvalidPhones = invalidPhones;
+  var messageLimit = Number(data.message_limit || 150);
+  var extraRowsTruncated = Number(data.extra_rows_truncated || 0);
+  
+  // Build warnings list
+  if (truncatedRows.length > 0) {
+    warnings.push('Text message character limit is ' + messageLimit + '. CSV row(s) ' + truncatedRows + ' were truncated.');
+  }
+  if (faultyMessageRows.length > 0) {
+    warnings.push('Invalid message format detected in CSV row(s) ' + faultyMessageRows + '. Message text was left blank for those rows.');
+  }
+
+  if (extraRowsTruncated > 0) {
+    warnings.push('CSV has more than 50 data rows. Extra row count truncated: ' + extraRowsTruncated + '.');
+  }
+  
+  if (invalidPhones.length > 0) {
+    var invalidRows = {};
+    invalidPhones.forEach(function(w) {
+      var no = Number(w && w.no);
+      if (Number.isFinite(no) && no > 0) {
+        invalidRows[no] = true;
+      }
+    });
+    var rowList = Object.keys(invalidRows)
+      .map(function(k) { return Number(k); })
+      .sort(function(a, b) { return a - b; })
+      .map(function(n) { return 'Row ' + n; });
+    if (rowList.length > 0) {
+      warnings.push('Invalid phone numbers detected in: ' + rowList.join(', '));
+    }
+  }
+  
+  // Display warnings
+  if (warnings.length > 0) {
+    var html = '<strong>Upload successful - ' + data.loaded + ' entries loaded.</strong><br><strong>Warnings:</strong><ul>';
+    warnings.forEach(function(w) {
+      html += '<li>' + w + '</li>';
+    });
+    html += '</ul>';
+    warningsDiv.innerHTML = html;
+    warningsDiv.className = 'upload-warnings';
+  } else {
+    clearUploadWarnings();
+  }
+}
+
+function clearUploadWarnings() {
+  var el = document.getElementById('upload-warnings');
+  if (!el) return;
+  el.className = 'upload-warnings hidden';
+  el.innerHTML = '';
+}
+
+function showUploadError(msg) {
+  var el = document.getElementById('upload-warnings');
+  if (!el) return;
+  el.innerHTML = '<strong>Upload failed:</strong> ' + escapeHtml(msg || 'unknown error');
+  el.className = 'upload-warnings error';
 }
 
 function setDash(id, value) {
@@ -1179,11 +1273,34 @@ function loadDashboard() {
 
 function phone(num) {
   if (!num || num.trim() === '') return '<span style="color:#bbb">-</span>';
-  return '<span class="phone">' + num + '</span>';
+  return '<span class="phone">' + escapeHtml(num) + '</span>';
 }
 
-function renderTable(rows) {
+function buildInvalidPhoneMap(invalidPhones) {
+  var map = {};
+  if (!Array.isArray(invalidPhones)) return map;
+  invalidPhones.forEach(function(w) {
+    var no = Number(w && w.no);
+    var col = String((w && w.col) || '');
+    var m = col.match(/^Phone([1-5])$/);
+    if (!Number.isFinite(no) || !m) return;
+    var idx = Number(m[1]) - 1;
+    var key = no + ':' + idx;
+    map[key] = String((w && w.value) || '');
+  });
+  return map;
+}
+
+function phoneWithInvalid(num, invalidNum) {
+  if (invalidNum && invalidNum.trim() !== '') {
+    return '<span class="phone phone-invalid" title="Invalid phone number">' + escapeHtml(invalidNum) + '</span>';
+  }
+  return phone(num);
+}
+
+function renderTable(rows, invalidPhones) {
   var tbody = document.getElementById('table-body');
+  var invalidMap = buildInvalidPhoneMap(invalidPhones || latestInvalidPhones);
   var safeRows = Array.isArray(rows) ? rows : [];
   safeRows = safeRows.filter(function(r) {
     if (!r) return false;
@@ -1191,7 +1308,16 @@ function renderTable(rows) {
     var hasPhone = Array.isArray(r.phones) && r.phones.some(function(p) {
       return typeof p === 'string' && p.trim() !== '';
     });
-    return hasText || hasPhone;
+    var hasInvalidPhone = false;
+    if (Number.isFinite(Number(r.no))) {
+      for (var ip = 0; ip < 5; ip++) {
+        if (invalidMap[Number(r.no) + ':' + ip]) {
+          hasInvalidPhone = true;
+          break;
+        }
+      }
+    }
+    return hasText || hasPhone || hasInvalidPhone;
   });
   document.getElementById('count-badge').textContent = safeRows.length;
 
@@ -1202,10 +1328,12 @@ function renderTable(rows) {
 
   var html = '';
   safeRows.forEach(function(r) {
+    var rowNo = Number(r.no);
     html += '<tr>';
     html += '<td class="no-col">' + r.no + '</td>';
     for (var p = 0; p < 5; p++) {
-      html += '<td>' + phone(r.phones[p]) + '</td>';
+      var invalidKey = rowNo + ':' + p;
+      html += '<td>' + phoneWithInvalid(r.phones[p], invalidMap[invalidKey]) + '</td>';
     }
     html += '<td class="msg-col">' + escapeHtml(r.text) + '</td>';
     html += '</tr>';
@@ -1220,7 +1348,11 @@ function escapeHtml(str) {
 function loadTable() {
   fetch('/api/config-table')
     .then(function(r) { return r.json(); })
-    .then(function(data) { renderTable(data.rows); })
+    .then(function(data) {
+      var invalidPhones = Array.isArray(data.invalid_phones) ? data.invalid_phones : [];
+      latestInvalidPhones = invalidPhones;
+      renderTable(data.rows, invalidPhones);
+    })
     .catch(function(err) { setStatus('Failed to load config: ' + err.message, 'err'); });
 }
 
@@ -1233,12 +1365,12 @@ function uploadFile() {
   if (!file) return;
   if (file.name !== 'MBmapconf.csv') {
     showUploadNote(false);
-    setStatus('Invalid file name. Please upload/rename the file exactly named as MBmapconf.csv', 'err');
+    showUploadError('Invalid file name. Please upload/rename the file exactly named as MBmapconf.csv');
     document.getElementById('file').value = '';
     return;
   }
 
-  setStatus('Uploading...', 'inf');
+  clearUploadWarnings();
 
   var formData = new FormData();
   formData.append('file', file);
@@ -1247,17 +1379,17 @@ function uploadFile() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
-        setStatus('Upload successful - ' + data.loaded + ' entries loaded.', 'ok');
         showUploadNote(true);
-        renderTable(data.rows);  // instant table update from upload response
+        displayUploadWarnings(data);
+        renderTable(data.rows, data.invalid_phones);  // instant table update from upload response
       } else {
         showUploadNote(false);
-        setStatus('Upload failed: ' + (data.error || 'unknown error'), 'err');
+        showUploadError(data.error || 'unknown error');
       }
     })
     .catch(function(err) {
       showUploadNote(false);
-      setStatus('Upload failed: ' + err.message, 'err');
+      showUploadError(err.message);
     });
 
   // Reset file input so the same file can be re-uploaded if needed
@@ -1272,6 +1404,7 @@ function deleteConfig() {
     .then(function(data) {
       if (data.success) {
         setStatus('Config deleted.', 'ok');
+        clearUploadWarnings();
         renderTable([]);
       } else {
         setStatus('Delete failed: ' + (data.error || 'unknown error'), 'err');

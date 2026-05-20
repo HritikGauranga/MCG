@@ -25,6 +25,14 @@ static int16_t  inputRegs[INPUT_REGISTER_COUNT]  = {
 };
 static MessageConfig messageConfigs[MESSAGE_SLOT_COUNT] = {};
 static size_t loadedMessageCount = 0;
+static uint16_t truncatedMessageRows[MESSAGE_SLOT_COUNT] = {};
+static size_t truncatedMessageRowCount = 0;
+static size_t truncatedExtraRowCount = 0;
+static uint16_t faultyMessageRows[MESSAGE_SLOT_COUNT] = {};
+static size_t faultyMessageRowCount = 0;
+static InvalidPhoneWarning invalidPhoneWarnings[MAX_INVALID_PHONE_WARNINGS] = {};
+static size_t invalidPhoneWarningCount = 0;
+static String lastCsvLoadError = "";
 static GatewaySettings gatewaySettings = {
   true,            // useDhcp
   {192,168,8,200}, // staticIp
@@ -104,10 +112,46 @@ String Shared_trimCopy(const String &value) {
   return copy;
 }
 
+// ---------------------------------------------------------------------------
+// Phone number validation for CSV upload warnings
+// Accepts: pure numbers (10-15 digits) or +<country><number> (E.164 format)
+// ---------------------------------------------------------------------------
+static bool isValidPhoneFormat(const String &number) {
+  if (number.length() == 0) return true;  // Empty is OK (no phone for this slot)
+  if (number.length() < 10 || number.length() > 20) return false;
+
+  String trimmed = number;
+  trimmed.trim();
+  
+  if (trimmed.charAt(0) == '+') {
+    // E.164 format: +<1-3 digit country><7-12 digit number>
+    if (trimmed.length() < 11 || trimmed.length() > 15) return false;
+    for (size_t i = 1; i < trimmed.length(); ++i) {
+      char c = trimmed.charAt(i);
+      if (c < '0' || c > '9') return false;
+    }
+    return true;
+  } else {
+    // Pure digits: 10-15 digits
+    if (trimmed.length() < 10 || trimmed.length() > 15) return false;
+    for (size_t i = 0; i < trimmed.length(); ++i) {
+      char c = trimmed.charAt(i);
+      if (c < '0' || c > '9') return false;
+    }
+    return true;
+  }
+}
+
 
 // CSV parser
 
-static bool parseMessageLine(const String &line, MessageConfig &config) {
+static bool parseMessageLine(const String &line,
+                             MessageConfig &config,
+                             uint16_t csvRowNumber,
+                             uint16_t truncatedRows[MESSAGE_SLOT_COUNT],
+                             size_t &truncatedCount,
+                             uint16_t localFaultyMessageRows[MESSAGE_SLOT_COUNT],
+                             size_t &localFaultyMessageCount) {
   int commas[6] = {-1, -1, -1, -1, -1, -1};
   int found = 0;
 
@@ -129,19 +173,78 @@ static bool parseMessageLine(const String &line, MessageConfig &config) {
     int start = commas[phoneIndex] + 1;
     int end   = commas[phoneIndex + 1];
     String number = Shared_trimCopy(line.substring(start, end));
+    
     if (number.length() == 0) continue;
+    
+    // Validate phone format
+    if (!isValidPhoneFormat(number)) {
+      // Collect invalid phone warning
+      if (invalidPhoneWarningCount < MAX_INVALID_PHONE_WARNINGS) {
+        invalidPhoneWarnings[invalidPhoneWarningCount].csvRow = csvRowNumber;
+        invalidPhoneWarnings[invalidPhoneWarningCount].msgNo = (uint8_t)msgNo;
+        invalidPhoneWarnings[invalidPhoneWarningCount].phoneColumn = (uint8_t)phoneIndex;
+        number.toCharArray(invalidPhoneWarnings[invalidPhoneWarningCount].invalidNumber, PHONE_NUMBER_LENGTH);
+        invalidPhoneWarningCount++;
+      }
+      continue;  // Skip invalid number
+    }
+    
     number.toCharArray(config.phoneNumbers[phoneIndex], PHONE_NUMBER_LENGTH);
     config.phoneCount++;
   }
 
-  String message = Shared_trimCopy(line.substring(commas[5] + 1));
+  String rawMessage = Shared_trimCopy(line.substring(commas[5] + 1));
+  String message = "";
+  bool messageFaulty = false;
+
+  // Message field handling:
+  // - Unquoted message: allowed only when it does not contain commas.
+  // - Quoted message: allows commas inside, with doubled quotes ("") as escapes.
+  // - Faulty format: keep message blank for this row.
+  if (rawMessage.length() > 0) {
+    if (rawMessage.charAt(0) == '\"') {
+      if (rawMessage.length() >= 2 && rawMessage.charAt(rawMessage.length() - 1) == '\"') {
+        message = rawMessage.substring(1, rawMessage.length() - 1);
+        message.replace("\"\"", "\"");
+      } else {
+        message = "";
+        messageFaulty = true;
+      }
+    } else {
+      if (rawMessage.indexOf(',') >= 0) {
+        message = "";
+        messageFaulty = true;
+      } else {
+        message = rawMessage;
+      }
+    }
+  }
+
+  if (messageFaulty && localFaultyMessageCount < MESSAGE_SLOT_COUNT) {
+    localFaultyMessageRows[localFaultyMessageCount++] = csvRowNumber;
+  }
+
+  if (message.length() > (MESSAGE_TEXT_LENGTH - 1)) {
+    message = message.substring(0, MESSAGE_TEXT_LENGTH - 1);
+    if (truncatedCount < MESSAGE_SLOT_COUNT) {
+      truncatedRows[truncatedCount++] = csvRowNumber;
+    }
+  }
   message.toCharArray(config.text, MESSAGE_TEXT_LENGTH);
-  return message.length() > 0;
+  return true;
 }
 
 static void clearMessageConfig() {
   memset(messageConfigs, 0, sizeof(messageConfigs));
   loadedMessageCount = 0;
+  memset(truncatedMessageRows, 0, sizeof(truncatedMessageRows));
+  truncatedMessageRowCount = 0;
+  truncatedExtraRowCount = 0;
+  memset(faultyMessageRows, 0, sizeof(faultyMessageRows));
+  faultyMessageRowCount = 0;
+  memset(invalidPhoneWarnings, 0, sizeof(invalidPhoneWarnings));
+  invalidPhoneWarningCount = 0;
+  lastCsvLoadError = "";
 }
 
 static bool parseIPv4(const String &src, uint8_t out[4]) {
@@ -210,8 +313,15 @@ void Shared_unlockSPI() {
 // Config load
 bool Shared_loadMessageConfig() {
   static MessageConfig parsedConfigs[MESSAGE_SLOT_COUNT];
+  uint16_t localTruncatedRows[MESSAGE_SLOT_COUNT] = {};
+  size_t localTruncatedCount = 0;
+  size_t localExtraRowCount = 0;
+  uint16_t localFaultyMessageRows[MESSAGE_SLOT_COUNT] = {};
+  size_t localFaultyMessageCount = 0;
   size_t parsedCount = 0;
   memset(parsedConfigs, 0, sizeof(parsedConfigs));
+  uint16_t csvRowNumber = 1; // Header row
+  size_t dataRowCount = 0;
 
   if (!Shared_lockFileSystem(pdMS_TO_TICKS(2000))) return false;
 
@@ -228,10 +338,17 @@ bool Shared_loadMessageConfig() {
   if (f.available()) f.readStringUntil('\n'); // skip header
 
   while (f.available()) {
+    csvRowNumber++;
     String line = Shared_trimCopy(f.readStringUntil('\n'));
     if (line.length() == 0) continue;
+    dataRowCount++;
+    if (dataRowCount > MESSAGE_SLOT_COUNT) {
+      localExtraRowCount++;
+      continue;
+    }
     MessageConfig config = {};
-    if (!parseMessageLine(line, config)) continue;
+    if (!parseMessageLine(line, config, csvRowNumber, localTruncatedRows, localTruncatedCount,
+                          localFaultyMessageRows, localFaultyMessageCount)) continue;
     size_t slot = (size_t)(config.msgNo - 1);
     parsedConfigs[slot] = config;
     parsedCount++;
@@ -244,6 +361,14 @@ bool Shared_loadMessageConfig() {
   memset(messageConfigs, 0, sizeof(messageConfigs));
   memcpy(messageConfigs, parsedConfigs, sizeof(parsedConfigs));
   loadedMessageCount = parsedCount;
+  memset(truncatedMessageRows, 0, sizeof(truncatedMessageRows));
+  memcpy(truncatedMessageRows, localTruncatedRows, sizeof(localTruncatedRows));
+  truncatedMessageRowCount = localTruncatedCount;
+  truncatedExtraRowCount = localExtraRowCount;
+  memset(faultyMessageRows, 0, sizeof(faultyMessageRows));
+  memcpy(faultyMessageRows, localFaultyMessageRows, sizeof(localFaultyMessageRows));
+  faultyMessageRowCount = localFaultyMessageCount;
+  lastCsvLoadError = "";
   Shared_unlockState();
   return true;
 }
@@ -263,6 +388,67 @@ bool Shared_getMessageConfig(size_t index, MessageConfig &config) {
   config = messageConfigs[index];
   Shared_unlockState();
   return config.valid;
+}
+
+String Shared_getTruncatedMessageRowsCSV() {
+  String rows = "";
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return rows;
+  for (size_t i = 0; i < truncatedMessageRowCount; ++i) {
+    if (i > 0) rows += ",";
+    rows += String((unsigned int)truncatedMessageRows[i]);
+  }
+  Shared_unlockState();
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Return invalid phone warnings as JSON array for frontend display
+// Format: [{"row":2,"col":"Phone1","value":"+91 123456"},...]
+// ---------------------------------------------------------------------------
+String Shared_getInvalidPhoneWarningsJSON() {
+  String json = "[";
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return json + "]";
+  
+  const char *phoneColName[] = {"Phone1", "Phone2", "Phone3", "Phone4", "Phone5"};
+  
+  for (size_t i = 0; i < invalidPhoneWarningCount; ++i) {
+    if (i > 0) json += ",";
+    json += "{\"row\":" + String((unsigned)invalidPhoneWarnings[i].csvRow)
+          + ",\"no\":" + String((unsigned)invalidPhoneWarnings[i].msgNo)
+          + ",\"col\":\"" + phoneColName[invalidPhoneWarnings[i].phoneColumn]
+          + "\",\"value\":\"" + String(invalidPhoneWarnings[i].invalidNumber) + "\"}";
+  }
+  
+  Shared_unlockState();
+  json += "]";
+  return json;
+}
+
+String Shared_getFaultyMessageRowsCSV() {
+  String rows = "";
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return rows;
+  for (size_t i = 0; i < faultyMessageRowCount; ++i) {
+    if (i > 0) rows += ",";
+    rows += String((unsigned int)faultyMessageRows[i]);
+  }
+  Shared_unlockState();
+  return rows;
+}
+
+String Shared_getLastCSVLoadError() {
+  String err = "";
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return err;
+  err = lastCsvLoadError;
+  Shared_unlockState();
+  return err;
+}
+
+size_t Shared_getTruncatedExtraRowCount() {
+  size_t count = 0;
+  if (!Shared_lockState(pdMS_TO_TICKS(100))) return count;
+  count = truncatedExtraRowCount;
+  Shared_unlockState();
+  return count;
 }
 
 

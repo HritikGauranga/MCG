@@ -6,9 +6,10 @@
 constexpr size_t MESSAGE_SLOT_COUNT       = 50;
 constexpr size_t PHONE_SLOTS_PER_MESSAGE  = 5;
 constexpr size_t PHONE_NUMBER_LENGTH      = 20;
-constexpr size_t MESSAGE_TEXT_LENGTH      = 512;
+constexpr size_t MESSAGE_TEXT_LENGTH      = 151;
 constexpr size_t HOLDING_REGISTER_COUNT   = 100;
 constexpr size_t INPUT_REGISTER_COUNT     = 4;
+constexpr size_t MAX_INVALID_PHONE_WARNINGS = 100;  // Track up to 100 invalid phone entries
 
 constexpr size_t TRIGGER_REGISTER_START   = 0;
 constexpr size_t RESULT_REGISTER_START    = 50;
@@ -40,6 +41,13 @@ struct MessageConfig {
   uint8_t phoneCount;
   char    phoneNumbers[PHONE_SLOTS_PER_MESSAGE][PHONE_NUMBER_LENGTH];
   char    text[MESSAGE_TEXT_LENGTH];
+};
+
+struct InvalidPhoneWarning {
+  uint16_t csvRow;
+  uint8_t  msgNo;
+  uint8_t  phoneColumn;  // 0-4 for Phone1-Phone5
+  char     invalidNumber[PHONE_NUMBER_LENGTH];
 };
 
 struct SystemSnapshot {
@@ -93,6 +101,11 @@ void Shared_unlockSPI();
 bool   Shared_loadMessageConfig();
 size_t Shared_getLoadedMessageCount();
 bool   Shared_getMessageConfig(size_t index, MessageConfig &config);
+String Shared_getTruncatedMessageRowsCSV();
+String Shared_getInvalidPhoneWarningsJSON();
+String Shared_getFaultyMessageRowsCSV();
+String Shared_getLastCSVLoadError();
+size_t Shared_getTruncatedExtraRowCount();
 bool   Shared_loadGatewaySettings();
 bool   Shared_getGatewaySettings(GatewaySettings &settings);
 bool   Shared_saveGatewaySettings(const GatewaySettings &settings);
