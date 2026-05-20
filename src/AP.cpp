@@ -1126,7 +1126,6 @@ String htmlPage() {
     <button class="danger"   onclick="deleteConfig()">&#10005; Delete CSV</button>
   </div>
   <div id="upload-warnings" class="upload-warnings hidden"></div>
-  <p id="upload-note" class="note hidden"><strong>Note:</strong> CSV uploaded successfully. Please verify all phone numbers in <strong>Loaded Entries</strong>. Invalid or non-existent numbers can cause SMS send failures.</p>
 
   <div class="table-wrap">
     <table>
@@ -1164,12 +1163,6 @@ function clearStatus() {
   el.className = 'status';
 }
 
-function showUploadNote(show) {
-  var el = document.getElementById('upload-note');
-  if (!el) return;
-  el.className = show ? 'note' : 'note hidden';
-}
-
 var latestInvalidPhones = [];
 
 function displayUploadWarnings(data) {
@@ -1184,12 +1177,25 @@ function displayUploadWarnings(data) {
   var messageLimit = Number(data.message_limit || 150);
   var extraRowsTruncated = Number(data.extra_rows_truncated || 0);
   
-  // Build warnings list
-  if (truncatedRows.length > 0) {
-    warnings.push('Text message character limit is ' + messageLimit + '. CSV row(s) ' + truncatedRows + ' were truncated.');
+  function toVisibleDataRows(csvRowsText) {
+    if (!csvRowsText) return '';
+    var out = csvRowsText
+      .split(',')
+      .map(function(s) { return Number(String(s).trim()); })
+      .filter(function(n) { return Number.isFinite(n) && n >= 2; })
+      .map(function(n) { return String(n - 1); });
+    return out.join(',');
   }
-  if (faultyMessageRows.length > 0) {
-    warnings.push('Invalid message format detected in CSV row(s) ' + faultyMessageRows + '. Message text was left blank for those rows.');
+
+  var truncatedRowsVisible = toVisibleDataRows(truncatedRows);
+  var faultyMessageRowsVisible = toVisibleDataRows(faultyMessageRows);
+
+  // Build warnings list
+  if (truncatedRowsVisible.length > 0) {
+    warnings.push('Text message character limit is ' + messageLimit + '. CSV row(s) ' + truncatedRowsVisible + ' were truncated.');
+  }
+  if (faultyMessageRowsVisible.length > 0) {
+    warnings.push('Invalid message format detected in CSV row(s) ' + faultyMessageRowsVisible + '. Message text was left blank for those rows.');
   }
 
   if (extraRowsTruncated > 0) {
@@ -1213,18 +1219,19 @@ function displayUploadWarnings(data) {
     }
   }
   
-  // Display warnings
+  // Display upload summary (with optional warnings)
+  var html = '<strong>Upload successful - ' + data.loaded + ' entries loaded.</strong>'
+           + '<br>Please verify all phone numbers in <strong>Loaded Entries</strong>. '
+           + 'Invalid or non-existent numbers can cause SMS send failures.';
   if (warnings.length > 0) {
-    var html = '<strong>Upload successful - ' + data.loaded + ' entries loaded.</strong><br><strong>Warnings:</strong><ul>';
+    html += '<br><strong>Warnings:</strong><ul>';
     warnings.forEach(function(w) {
       html += '<li>' + w + '</li>';
     });
     html += '</ul>';
-    warningsDiv.innerHTML = html;
-    warningsDiv.className = 'upload-warnings';
-  } else {
-    clearUploadWarnings();
   }
+  warningsDiv.innerHTML = html;
+  warningsDiv.className = 'upload-warnings';
 }
 
 function clearUploadWarnings() {
@@ -1364,7 +1371,6 @@ function uploadFile() {
   var file = document.getElementById('file').files[0];
   if (!file) return;
   if (file.name !== 'MBmapconf.csv') {
-    showUploadNote(false);
     showUploadError('Invalid file name. Please upload/rename the file exactly named as MBmapconf.csv');
     document.getElementById('file').value = '';
     return;
@@ -1379,16 +1385,13 @@ function uploadFile() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
-        showUploadNote(true);
         displayUploadWarnings(data);
         renderTable(data.rows, data.invalid_phones);  // instant table update from upload response
       } else {
-        showUploadNote(false);
         showUploadError(data.error || 'unknown error');
       }
     })
     .catch(function(err) {
-      showUploadNote(false);
       showUploadError(err.message);
     });
 
