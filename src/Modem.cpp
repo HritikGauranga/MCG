@@ -8,7 +8,7 @@ static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
 static unsigned long lastNotReadyLogMs = 0;
 static bool simMissingLatched = false;
-static bool lastSimStateValid = false;
+static unsigned long lastSimRecheckMs = 0;
 
 // ---------------------------------------------------------------------------
 // Serial AT helpers
@@ -69,7 +69,6 @@ bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   simMissingLatched = (sim.indexOf("SIM not inserted") != -1);
-  lastSimStateValid = ready;
   Shared_writeInputRegister(SIM_STATUS_REGISTER,
     ready ? (int16_t)STATE_READY : (int16_t)STATE_ERROR);
   return ready;
@@ -215,7 +214,6 @@ void initModem() {
   if (res.indexOf("OK") == -1) {
     modemReady = false;
     simMissingLatched = false;
-    lastSimStateValid = false;
     updateModemState((int16_t)STATE_ERROR, (int16_t)STATE_IDLE, (int16_t)STATE_IDLE);
     Serial.println("[MODEM] No modem response after power ON");
     return;
@@ -301,12 +299,6 @@ static void scanTriggerEdges(bool previousState[MESSAGE_SLOT_COUNT]) {
   constexpr uint8_t LOW_REARM_SCANS = 4; // 4 * 25ms ~= 100ms stable low
 
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
-
-    // Loose trigger semantics: any non-zero value is treated as "active".
-    //  bool current = snapshot.triggerRegs[i] != 0;
-
-
-    // Strict trigger semantics: only exact value 1 is treated as "active".
     bool current = snapshot.triggerRegs[i] == 1;
 
     if (!current) {
@@ -333,14 +325,7 @@ static bool takeNextPendingSlot(size_t &slotIndex) {
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
     if (!pendingSlots[i]) continue;
 
-    // line no. 307 in ModbusTCPServer.cpp shows that the first row of holding registers is all initialized to 0 on server start, so we can rely on 0->1 transition as the trigger without worrying about stale non-zero values from before server start.
-    // this will fire row one if any rising edge is detected, i.e. number greater than 1, so initial value is 0 and writing any positive no. will be considered as rising edge
-    //  if (snapshot.triggerRegs[i] == 0) {
-    //   pendingSlots[i] = false;
-    //   continue;
-    // }
-
-    if (snapshot.triggerRegs[i] != 1) {
+    if (snapshot.triggerRegs[i] == 0) {
       pendingSlots[i] = false;
       continue;
     }
@@ -368,13 +353,29 @@ void Modem_task(void *pvParameters) {
     if (takeNextPendingSlot(slotToProcess)) {
       if (!modemReady) {
         unsigned long now = millis();
-        // Strict recovery: if the last known SIM state is invalid, do a full
-        // modem reinit only when a valid trigger arrives.
-        if (!lastSimStateValid) {
-          Serial.println("[MODEM] Last SIM state invalid - forcing full modem reinit on trigger...");
-          initModem();
-          if (modemReady) {
-            consecutiveModemHealthFailures = 0;
+
+        // If SIM is physically missing, avoid repeated modem power cycling.
+        if (simMissingLatched) {
+          if (now - lastSimRecheckMs >= 15000) {
+            lastSimRecheckMs = now;
+            Serial.println("[MODEM] SIM missing - checking CPIN without reinit...");
+            if (modemSimReady()) {
+              Serial.println("[MODEM] SIM detected - waiting for network...");
+              bool networkOk = waitForNetwork();
+              modemReady = networkOk;
+              updateModemState(
+                modemReady ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
+                (int16_t)STATE_READY,
+                networkOk ? (int16_t)STATE_READY : (int16_t)STATE_ERROR
+              );
+              if (modemReady) {
+                simMissingLatched = false;
+                consecutiveModemHealthFailures = 0;
+              }
+            }
+          } else if (now - lastNotReadyLogMs >= 5000) {
+            Serial.println("[MODEM] Not ready - SIM missing, recheck cooldown active");
+            lastNotReadyLogMs = now;
           }
         } else if (now - lastReinitAttemptMs >= 12000) {
           Serial.println("[MODEM] Not ready - attempting reinit...");
@@ -399,3 +400,7 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
+
+
+
+
