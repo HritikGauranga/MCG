@@ -150,6 +150,8 @@ static bool parseMessageLine(const String &line,
                              uint16_t csvRowNumber,
                              uint16_t truncatedRows[MESSAGE_SLOT_COUNT],
                              size_t &truncatedCount,
+                             InvalidPhoneWarning localInvalidPhoneWarnings[MAX_INVALID_PHONE_WARNINGS],
+                             size_t &localInvalidPhoneWarningCount,
                              uint16_t localFaultyMessageRows[MESSAGE_SLOT_COUNT],
                              size_t &localFaultyMessageCount) {
   int commas[6] = {-1, -1, -1, -1, -1, -1};
@@ -179,12 +181,12 @@ static bool parseMessageLine(const String &line,
     // Validate phone format
     if (!isValidPhoneFormat(number)) {
       // Collect invalid phone warning
-      if (invalidPhoneWarningCount < MAX_INVALID_PHONE_WARNINGS) {
-        invalidPhoneWarnings[invalidPhoneWarningCount].csvRow = csvRowNumber;
-        invalidPhoneWarnings[invalidPhoneWarningCount].msgNo = (uint8_t)msgNo;
-        invalidPhoneWarnings[invalidPhoneWarningCount].phoneColumn = (uint8_t)phoneIndex;
-        number.toCharArray(invalidPhoneWarnings[invalidPhoneWarningCount].invalidNumber, PHONE_NUMBER_LENGTH);
-        invalidPhoneWarningCount++;
+      if (localInvalidPhoneWarningCount < MAX_INVALID_PHONE_WARNINGS) {
+        localInvalidPhoneWarnings[localInvalidPhoneWarningCount].csvRow = csvRowNumber;
+        localInvalidPhoneWarnings[localInvalidPhoneWarningCount].msgNo = (uint8_t)msgNo;
+        localInvalidPhoneWarnings[localInvalidPhoneWarningCount].phoneColumn = (uint8_t)phoneIndex;
+        number.toCharArray(localInvalidPhoneWarnings[localInvalidPhoneWarningCount].invalidNumber, PHONE_NUMBER_LENGTH);
+        localInvalidPhoneWarningCount++;
       }
       continue;  // Skip invalid number
     }
@@ -318,6 +320,8 @@ bool Shared_loadMessageConfig() {
   size_t localExtraRowCount = 0;
   uint16_t localFaultyMessageRows[MESSAGE_SLOT_COUNT] = {};
   size_t localFaultyMessageCount = 0;
+  InvalidPhoneWarning localInvalidPhoneWarnings[MAX_INVALID_PHONE_WARNINGS] = {};
+  size_t localInvalidPhoneWarningCount = 0;
   size_t parsedCount = 0;
   memset(parsedConfigs, 0, sizeof(parsedConfigs));
   uint16_t csvRowNumber = 1; // Header row
@@ -348,6 +352,7 @@ bool Shared_loadMessageConfig() {
     }
     MessageConfig config = {};
     if (!parseMessageLine(line, config, csvRowNumber, localTruncatedRows, localTruncatedCount,
+                          localInvalidPhoneWarnings, localInvalidPhoneWarningCount,
                           localFaultyMessageRows, localFaultyMessageCount)) continue;
     size_t slot = (size_t)(config.msgNo - 1);
     parsedConfigs[slot] = config;
@@ -368,6 +373,9 @@ bool Shared_loadMessageConfig() {
   memset(faultyMessageRows, 0, sizeof(faultyMessageRows));
   memcpy(faultyMessageRows, localFaultyMessageRows, sizeof(localFaultyMessageRows));
   faultyMessageRowCount = localFaultyMessageCount;
+  memset(invalidPhoneWarnings, 0, sizeof(invalidPhoneWarnings));
+  memcpy(invalidPhoneWarnings, localInvalidPhoneWarnings, sizeof(localInvalidPhoneWarnings));
+  invalidPhoneWarningCount = localInvalidPhoneWarningCount;
   lastCsvLoadError = "";
   Shared_unlockState();
   return true;

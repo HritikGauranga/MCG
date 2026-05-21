@@ -48,8 +48,10 @@ static unsigned long lastTcpWorkMs = 0;
 static uint16_t configuredTcpPort = 502;
 static bool invalidIpStateLogged = false;
 static bool linkDownStateLogged = false;
+static unsigned long lastDhcpPromotionDeferredLogMs = 0;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
+static constexpr unsigned long DHCP_PROMOTION_DEFER_LOG_INTERVAL_MS = 30000;
 static bool waitForEthIP(unsigned long timeoutMs);
 static const char *currentEthModeLabel();
 
@@ -129,39 +131,24 @@ static bool enableDhcpMode() {
 }
 
 static bool reinitializeEthStackForDhcp() {
-  Serial.println("[ETH] DHCP recovery: reinitializing Ethernet stack");
+  // NOTE:
+  // Hard ETH teardown/restart (ETH.end + ETH.begin) can panic on some builds
+  // while the lwIP/web stack is active on the other core. Keep recovery
+  // non-destructive: re-request DHCP without bringing the interface down.
+  Serial.println("[ETH] DHCP recovery: safe DHCP re-acquire (no ETH.end)");
   resetTcpServerState("eth-reinit");
 
-  ETH.end();
-  delay(150);
-
-  pinMode(ETH_PHY_CS, OUTPUT);
-  digitalWrite(ETH_PHY_CS, HIGH);
-  pinMode(ETH_PHY_RST, OUTPUT);
-  digitalWrite(ETH_PHY_RST, LOW);
-  delay(50);
-  digitalWrite(ETH_PHY_RST, HIGH);
-  delay(250);
-
-  SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
-  SPI.setFrequency(8000000);
-
-  if (!ETH.begin(ETH_PHY_W5500, ETH_W5500_ADDR, ETH_PHY_CS, ETH_PHY_IRQ, ETH_PHY_RST, SPI)) {
-    Serial.println("[ETH] DHCP recovery: ETH.begin failed after reinit");
-    return false;
-  }
-
   if (!enableDhcpMode()) {
-    Serial.println("[ETH] DHCP recovery: unable to enable DHCP after reinit");
+    Serial.println("[ETH] DHCP recovery: unable to enable DHCP");
     return false;
   }
 
   if (!waitForEthIP(7000) || !isUsableDhcpLease()) {
-    Serial.println("[ETH] DHCP recovery: DHCP still unavailable after reinit");
+    Serial.println("[ETH] DHCP recovery: DHCP still unavailable after safe retry");
     return false;
   }
 
-  Serial.println("[ETH] DHCP recovery: success after Ethernet reinit");
+  Serial.println("[ETH] DHCP recovery: success after safe retry");
   return true;
 }
 
@@ -291,6 +278,17 @@ void TCP_maintainDHCP() {
   unsigned long now = millis();
   if (now - lastDhcpReacquireMs < DHCP_REACQUIRE_INTERVAL_MS) return;
   lastDhcpReacquireMs = now;
+
+  // Keep static fallback service uninterrupted. Rebinding to DHCP can
+  // temporarily drop the active IP (0.0.0.0 window), so defer promotion while
+  // the gateway is actively serving traffic or AP mode is in use.
+  if (clientActive || Shared_isAPModeActive()) {
+    if (now - lastDhcpPromotionDeferredLogMs >= DHCP_PROMOTION_DEFER_LOG_INTERVAL_MS) {
+      Serial.println("[ETH] DHCP promotion deferred to keep static fallback service stable");
+      lastDhcpPromotionDeferredLogMs = now;
+    }
+    return;
+  }
 
   // We are currently on static fallback; explicitly request DHCP first.
   if (!enableDhcpMode()) {

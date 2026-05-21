@@ -4,6 +4,7 @@
 #include <ETH.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <esp_system.h>
 
 static AsyncWebServer server(80);
 static File          uploadFile;
@@ -13,20 +14,56 @@ static const char    *WEBUI_USER        = "Admin";
 static const char    *WEBUI_PASS        = "Admin@123";
 static const char    *AP_PASS_FIXED     = "MSys@1234";
 static const char    *AUTH_COOKIE_NAME  = "MSMSG_AUTH";
-static const char    *AUTH_COOKIE_VALUE = "ok";
 static const char    *SERIAL_FILE_PATH  = "/serialnumber.txt";
 static const char    *SERIAL_META_PATH  = "/serial_meta.txt";
 static const char    *MBMAP_FILE_PATH   = "/MBmapconf.csv";
+static String         gAuthSessionToken = "";
 #ifndef FW_BUILD_TAG
 #define FW_BUILD_TAG __DATE__ " " __TIME__
 #endif
 static const char *FW_BUILD_TAG_VALUE = FW_BUILD_TAG;
 
+static String makeSessionToken() {
+  char buf[33] = {};
+  uint32_t a = esp_random();
+  uint32_t b = esp_random();
+  uint32_t c = esp_random();
+  uint32_t d = esp_random();
+  snprintf(buf, sizeof(buf), "%08lx%08lx%08lx%08lx",
+           (unsigned long)a,
+           (unsigned long)b,
+           (unsigned long)c,
+           (unsigned long)d);
+  return String(buf);
+}
+
+static String readCookieValue(const String &cookieHeader, const String &name) {
+  int start = 0;
+  while (start < (int)cookieHeader.length()) {
+    int sep = cookieHeader.indexOf(';', start);
+    if (sep < 0) sep = cookieHeader.length();
+    String pair = cookieHeader.substring(start, sep);
+    pair.trim();
+
+    int eq = pair.indexOf('=');
+    if (eq > 0) {
+      String key = pair.substring(0, eq);
+      String val = pair.substring(eq + 1);
+      key.trim();
+      val.trim();
+      if (key == name) return val;
+    }
+    start = sep + 1;
+  }
+  return "";
+}
+
 static bool isAuthenticated(AsyncWebServerRequest *request) {
+  if (gAuthSessionToken.length() == 0) return false;
   if (!request->hasHeader("Cookie")) return false;
   String cookie = request->getHeader("Cookie")->value();
-  String token  = String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE;
-  return cookie.indexOf(token) >= 0;
+  String value = readCookieValue(cookie, String(AUTH_COOKIE_NAME));
+  return value.length() > 0 && value == gAuthSessionToken;
 }
 
 static void sendRedirect(AsyncWebServerRequest *request, const char *location) {
@@ -36,6 +73,7 @@ static void sendRedirect(AsyncWebServerRequest *request, const char *location) {
 }
 
 static void clearAuthCookie(AsyncWebServerRequest *request) {
+  gAuthSessionToken = "";
   AsyncWebServerResponse *res = request->beginResponse(302);
   res->addHeader("Location", "/login");
   res->addHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=; Path=/; Max-Age=0");
@@ -619,11 +657,12 @@ void setupWebServerRoutes() {
     String expectedPass = getLoginPassword();
 
     if (user == expectedUser && pass == expectedPass) {
+      gAuthSessionToken = makeSessionToken();
       AsyncWebServerResponse *res = request->beginResponse(302);
       res->addHeader("Location", "/");
       res->addHeader("Set-Cookie",
-                     String(AUTH_COOKIE_NAME) + "=" + AUTH_COOKIE_VALUE +
-                     "; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax");
+                     String(AUTH_COOKIE_NAME) + "=" + gAuthSessionToken +
+                     "; Path=/; Max-Age=86400; HttpOnly; SameSite=Strict");
       request->send(res);
       return;
     }
