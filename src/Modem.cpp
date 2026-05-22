@@ -377,27 +377,19 @@ void Modem_task(void *pvParameters) {
       if (!modemReady) {
         unsigned long now = millis();
 
-        // If SIM is physically missing, avoid repeated modem power cycling.
+        // If SIM was last seen as missing, run a full modem init sequence
+        // so hot-inserted SIMs get detected through the normal bring-up path.
         if (simMissingLatched) {
           if (now - lastSimRecheckMs >= 15000) {
             lastSimRecheckMs = now;
-            Serial.println("[MODEM] SIM missing - checking CPIN without reinit...");
-            if (modemSimReady()) {
-              Serial.println("[MODEM] SIM detected - waiting for network...");
-              bool networkOk = waitForNetwork();
-              modemReady = networkOk;
-              updateModemState(
-                modemReady ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
-                (int16_t)STATE_READY,
-                networkOk ? (int16_t)STATE_READY : (int16_t)STATE_ERROR
-              );
-              if (modemReady) {
-                simMissingLatched = false;
-                consecutiveModemHealthFailures = 0;
-              }
+            Serial.println("[MODEM] SIM missing latched - running full modem init...");
+            initModem();
+            if (modemReady) {
+              simMissingLatched = false;
+              consecutiveModemHealthFailures = 0;
             }
           } else if (now - lastNotReadyLogMs >= 5000) {
-            Serial.println("[MODEM] Not ready - SIM missing, recheck cooldown active");
+            Serial.println("[MODEM] Not ready - SIM-missing init cooldown active");
             lastNotReadyLogMs = now;
           }
         } else if (now - lastReinitAttemptMs >= 12000) {
@@ -423,5 +415,3 @@ void Modem_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(25));
   }
 }
-
-

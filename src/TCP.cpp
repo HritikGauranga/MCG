@@ -31,6 +31,7 @@ static constexpr unsigned long DHCP_REACQUIRE_INTERVAL_MS = 30000;
 static constexpr uint8_t DHCP_REACQUIRE_FAILS_BEFORE_REINIT = 3;
 static constexpr unsigned long ETH_LINK_CHECK_INTERVAL_MS = 5000; // Check link every 5 seconds
 static constexpr unsigned long DHCP_INITIAL_WAIT_MS = 20000;
+static constexpr unsigned long DHCP_STARTUP_RETRY_WAIT_MS = 12000;
 static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
@@ -49,11 +50,14 @@ static uint16_t configuredTcpPort = 502;
 static bool invalidIpStateLogged = false;
 static bool linkDownStateLogged = false;
 static unsigned long lastDhcpPromotionDeferredLogMs = 0;
+static bool staticFallbackAutoPromotionLogged = false;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
 static constexpr unsigned long DHCP_PROMOTION_DEFER_LOG_INTERVAL_MS = 30000;
+static constexpr bool AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP = false;
 static bool waitForEthIP(unsigned long timeoutMs);
 static const char *currentEthModeLabel();
+static bool acquireDhcpLease(unsigned long timeoutMs);
 
 static void resetTcpServerState(const char *reasonTag) {
   if (clientActive) {
@@ -128,6 +132,11 @@ static bool isUsableDhcpLease() {
 static bool enableDhcpMode() {
   IPAddress zero(0, 0, 0, 0);
   return ETH.config(zero, zero, zero, zero, zero);
+}
+
+static bool acquireDhcpLease(unsigned long timeoutMs) {
+  if (!enableDhcpMode()) return false;
+  return waitForEthIP(timeoutMs) && isUsableDhcpLease();
 }
 
 static bool reinitializeEthStackForDhcp() {
@@ -231,9 +240,29 @@ void TCP_init() {
 
   if (ethInitialized && settings.useDhcp) {
     Serial.println("[ETH] DHCP mode");
-    networkReady = waitForEthIP(DHCP_INITIAL_WAIT_MS) && isUsableDhcpLease();
+    // Request DHCP explicitly and wait for a clean lease.
+    networkReady = acquireDhcpLease(DHCP_INITIAL_WAIT_MS);
+
+    // Some routers/switches respond slowly right after boot/link-up.
+    if (!networkReady) {
+      Serial.println("[ETH] DHCP startup retry...");
+      networkReady = acquireDhcpLease(DHCP_STARTUP_RETRY_WAIT_MS);
+    }
 
     if (!networkReady) {
+      if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+        Serial.print("[ETH] DHCP debug: linkUp=");
+        Serial.print(ETH.linkUp() ? "1" : "0");
+        Serial.print(", dhcpClient=");
+        Serial.print(isDhcpClientStarted() ? "STARTED" : "NOT_STARTED");
+        Serial.print(", ip=");
+        Serial.print(ETH.localIP());
+        Serial.print(", gw=");
+        Serial.print(ETH.gatewayIP());
+        Serial.print(", sn=");
+        Serial.println(ETH.subnetMask());
+        Shared_unlockSPI();
+      }
       Serial.println("[ETH] DHCP timeout, switching to static IP fallback");
       networkReady = applyStaticEthConfig(settings, "DHCP fallback");
       runningOnStaticFallback = networkReady;
@@ -274,10 +303,26 @@ void TCP_init() {
 }
 
 void TCP_maintainDHCP() {
-  if (!ethInitialized || !dhcpConfigured || !runningOnStaticFallback) return;
+  if (!ethInitialized || !dhcpConfigured) return;
+  if (!runningOnStaticFallback) {
+    staticFallbackAutoPromotionLogged = false;
+    return;
+  }
   unsigned long now = millis();
   if (now - lastDhcpReacquireMs < DHCP_REACQUIRE_INTERVAL_MS) return;
   lastDhcpReacquireMs = now;
+
+  // Keep static fallback always-on unless explicitly enabled.
+  // DHCP promotion probes can temporarily drop IP to 0.0.0.0 and disrupt
+  // HTTP/Modbus availability even when fallback networking is healthy.
+  if (!AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP) {
+    if (!staticFallbackAutoPromotionLogged) {
+      Serial.println("[ETH] DHCP auto-promotion disabled while on static fallback");
+      lastDhcpPromotionDeferredLogMs = now;
+      staticFallbackAutoPromotionLogged = true;
+    }
+    return;
+  }
 
   // Keep static fallback service uninterrupted. Rebinding to DHCP can
   // temporarily drop the active IP (0.0.0.0 window), so defer promotion while
