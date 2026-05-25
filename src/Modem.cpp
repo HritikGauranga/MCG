@@ -3,7 +3,7 @@
 #include <HardwareSerial.h>
 
 HardwareSerial SerialAT(1);
-bool modemReady = false;
+static bool modemReady = false;
 static uint8_t consecutiveModemHealthFailures = 0;
 static unsigned long lastReinitAttemptMs = 0;
 static unsigned long lastNotReadyLogMs = 0;
@@ -72,7 +72,7 @@ static bool normalizePhoneNumber(const String &input, String &normalized) {
 // ---------------------------------------------------------------------------
 // AT command
 // ---------------------------------------------------------------------------
-String sendAT(const String &cmd, int timeout) {
+static String sendAT(const String &cmd, int timeout) {
   while (SerialAT.available()) SerialAT.read();
 
   Serial.println("[AT] >> " + cmd);
@@ -87,7 +87,7 @@ String sendAT(const String &cmd, int timeout) {
 // ---------------------------------------------------------------------------
 // Modem checks
 // ---------------------------------------------------------------------------
-bool modemSimReady() {
+static bool modemSimReady() {
   String sim   = sendAT("AT+CPIN?", 2000);
   bool   ready = sim.indexOf("READY") != -1;
   simMissingLatched = (sim.indexOf("SIM not inserted") != -1);
@@ -96,7 +96,7 @@ bool modemSimReady() {
   return ready;
 }
 
-bool waitForNetwork() {
+static bool waitForNetwork() {
   for (int i = 0; i < 10; ++i) {
     String res = sendAT("AT+CREG?", 2000);
     if (res.indexOf("0,1") != -1 || res.indexOf("0,5") != -1) {
@@ -115,7 +115,7 @@ bool waitForNetwork() {
 // ---------------------------------------------------------------------------
 // sendSMS — two-step AT+CMGS exchange
 // ---------------------------------------------------------------------------
-bool sendSMS(const String &number, const String &message) {
+static bool sendSMS(const String &number, const String &message) {
   if (!modemReady) {
     Serial.println("[SMS] ERROR: Modem not ready");
     return false;
@@ -218,7 +218,7 @@ static void modemPowerOn() {
 // ---------------------------------------------------------------------------
 // initModem
 // ---------------------------------------------------------------------------
-void initModem() {
+static void initModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(500);
 

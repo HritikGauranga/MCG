@@ -7,7 +7,6 @@ const int MODEM_RX     = 16;
 const int MODEM_TX     = 17;
 const int MODEM_PWRKEY = 32;
 
-const unsigned long DHCP_RENEW_MS      = 60000;
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
 SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
@@ -471,13 +470,6 @@ SystemSnapshot Shared_getSnapshot() {
   memcpy(snapshot.inputRegs,   inputRegs,   sizeof(inputRegs));
   Shared_unlockState();
   return snapshot;
-}
-
-bool Shared_readTriggerRegister(size_t index, uint16_t &value) {
-  if (index >= MESSAGE_SLOT_COUNT || !Shared_lockState()) return false;
-  value = triggerRegs[index];
-  Shared_unlockState();
-  return true;
 }
 
 bool Shared_writeTriggerRegister(size_t index, uint16_t value) {

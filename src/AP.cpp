@@ -23,6 +23,11 @@ static String         gAuthSessionToken = "";
 #endif
 static const char *FW_BUILD_TAG_VALUE = FW_BUILD_TAG;
 
+static String htmlPage();
+static void setupWebServerRoutes();
+static void startAPMode();
+static void stopAPMode();
+
 static String makeSessionToken() {
   char buf[33] = {};
   uint32_t a = esp_random();
@@ -604,7 +609,6 @@ void printAPStatus() {
 // Format: [{"no":1,"phones":["081...","","","",""],"text":"ALARM..."},...]
 // ---------------------------------------------------------------------------
 static String buildConfigTableJSON() {
-  size_t count = Shared_getLoadedMessageCount();
   String json = "[";
 
   for (size_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -634,7 +638,7 @@ static String buildConfigTableJSON() {
   return json;
 }
 
-void setupWebServerRoutes() {
+static void setupWebServerRoutes() {
   if (serverRoutesSetup) return;
 
   server.on("/Gaurangalogo.png", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -978,7 +982,7 @@ void setupWebServerRoutes() {
   serverRoutesSetup = true;
 }
 
-void startAPMode() {
+static void startAPMode() {
   if (Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Starting Access Point...");
@@ -1004,7 +1008,7 @@ void startAPMode() {
   Serial.println("[AP] Access Point is now active");
 }
 
-void stopAPMode() {
+static void stopAPMode() {
   if (!Shared_isAPModeActive()) return;
 
   Serial.println("[AP] Stopping Access Point...");
@@ -1055,7 +1059,7 @@ void AP_taskLoop(void *pvParameters) {
   }
 }
 
-String htmlPage() {
+static String htmlPage() {
   return R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -1194,12 +1198,6 @@ function setStatus(msg, type) {
   if (!el) return;
   el.textContent = msg;
   el.className = 'status ' + type;
-}
-
-function clearStatus() {
-  var el = document.getElementById('status');
-  if (!el) return;
-  el.className = 'status';
 }
 
 var latestInvalidPhones = [];

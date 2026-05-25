@@ -302,7 +302,7 @@ void TCP_init() {
   ensureModbusServerStarted();
 }
 
-void TCP_maintainDHCP() {
+static void TCP_maintainDHCP() {
   if (!ethInitialized || !dhcpConfigured) return;
   if (!runningOnStaticFallback) {
     staticFallbackAutoPromotionLogged = false;
@@ -585,7 +585,7 @@ void TCP_monitorEthernetLink() {
   }
 }
 
-void TCP_processNetwork() {
+static void TCP_processNetwork() {
   if (ethServer == nullptr || !networkReady || !lastKnownLinkState) return;
 
   if (clientActive) {
@@ -618,7 +618,7 @@ void TCP_processNetwork() {
 // last saw. This prevents TCP from clobbering a value RTU wrote and vice
 // versa. Shared memory is the single source of truth.
 // ---------------------------------------------------------------------------
-void TCP_syncFrom() {
+static void TCP_syncFrom() {
   if (!networkReady || !lastKnownLinkState || !clientActive) return;
   if ((long)(millis() - suppressSyncFromUntilMs) < 0) return;
   for (uint16_t i = 0; i < MESSAGE_SLOT_COUNT; ++i) {
@@ -639,7 +639,7 @@ void TCP_syncFrom() {
 // This prevents the clobber race where RTU_syncFrom mistakes TCP's mirror
 // write as a new RTU master write.
 // ---------------------------------------------------------------------------
-void TCP_syncTo() {
+static void TCP_syncTo() {
   if (!networkReady || !lastKnownLinkState) return;
   SystemSnapshot snapshot = Shared_getSnapshot();
 
