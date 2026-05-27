@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <ArduinoModbus.h>
 #include <esp_netif.h>
+#include <esp_log.h>
 
 static WiFiServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
@@ -37,7 +38,6 @@ static constexpr unsigned long DHCP_INITIAL_WAIT_MS = 20000;
 static constexpr unsigned long DHCP_STARTUP_RETRY_WAIT_MS = 12000;
 static constexpr unsigned long DHCP_REACQUIRE_WAIT_MS = 10000;
 static constexpr unsigned long DHCP_LINK_RECOVERY_WAIT_MS = 10000;
-static constexpr unsigned long DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS = 120000;
 static constexpr unsigned long DHCP_INVALID_IP_RETRY_INTERVAL_MS = 15000;
 static constexpr uint8_t DHCP_INVALID_IP_FAILS_BEFORE_REINIT = 3;
 static constexpr unsigned long DHCP_HOLDOVER_GRACE_MS = 20000;
@@ -63,12 +63,18 @@ static constexpr bool AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP = false;
 static bool waitForEthIP(unsigned long timeoutMs);
 static const char *currentEthModeLabel();
 static bool acquireDhcpLease(unsigned long timeoutMs);
+static bool recoverW5500Link(const GatewaySettings &settings, const char *reasonTag, bool preferStaticFallback);
+
+static void suppressW5500DisconnectNoise() {
+  // The W5500 driver can emit repeated "received frame was truncated" errors
+  // while the Ethernet cable is unplugged or bouncing. Link monitoring below
+  // handles the real state transition, so keep this driver tag quiet.
+  esp_log_level_set("w5500.mac", ESP_LOG_NONE);
+}
 
 static void resetTcpServerState(const char *reasonTag) {
   if (clientActive) {
-    Serial.print("[MODBUS TCP] Client disconnected: remote=");
-    Serial.print(activeClient.remoteIP());
-    Serial.print(", reason=");
+    Serial.print("[MODBUS TCP] Client disconnected: reason=");
     Serial.println(reasonTag);
     activeClient.stop();
     clientActive = false;
@@ -268,16 +274,7 @@ static bool applyStaticEthConfig(const GatewaySettings &settings, const char *re
   return true;
 }
 
-void TCP_init() {
-  GatewaySettings settings = {};
-  Shared_getGatewaySettings(settings);
-  configuredTcpPort = settings.tcpPort;
-  dhcpConfigured = settings.useDhcp;
-  runningOnStaticFallback = false;
-  networkReady = false;
-  lastKnownLinkState = false;
-
-  // Harden W5500 bring-up: ensure reset and CS states are clean before ETH.begin().
+static bool beginW5500Hardware(const char *reasonTag) {
   pinMode(ETH_PHY_CS, OUTPUT);
   digitalWrite(ETH_PHY_CS, HIGH);
   pinMode(ETH_PHY_RST, OUTPUT);
@@ -287,14 +284,83 @@ void TCP_init() {
   delay(250);
 
   SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
-  SPI.setFrequency(8000000); // Safer than high default clocks on long/noisy wiring.
+  SPI.setFrequency(8000000);
 
-  Serial.println("[ETH] Starting Ethernet...");
+  Serial.print("[ETH] Starting Ethernet: ");
+  Serial.println(reasonTag);
+
+  if (!ETH.begin(ETH_PHY_W5500, ETH_W5500_ADDR, ETH_PHY_CS, ETH_PHY_IRQ, ETH_PHY_RST, SPI)) {
+    Serial.print("[ETH] ERROR: ETH.begin failed for ");
+    Serial.println(reasonTag);
+    return false;
+  }
+
+  return true;
+}
+
+static bool recoverW5500Link(const GatewaySettings &settings, const char *reasonTag, bool preferStaticFallback) {
+  Serial.print("[ETH] W5500 link recovery: ");
+  Serial.println(reasonTag);
+
+  resetTcpServerState(reasonTag);
+  networkReady = false;
+  lastKnownLinkState = false;
+
+  // Do not call ETH.end(), SPI.end(), ETH.begin(), or toggle W5500 reset here.
+  // This Arduino-ESP32/W5500 stack can panic if the active driver/lwIP stack is
+  // disturbed from the TCP task. Keep the driver alive and only rebind IP state.
+  delay(250);
+
+  if (preferStaticFallback || !settings.useDhcp) {
+    networkReady = applyStaticEthConfig(settings, reasonTag);
+    runningOnStaticFallback = settings.useDhcp ? networkReady : false;
+  } else {
+    networkReady = acquireDhcpLease(DHCP_LINK_RECOVERY_WAIT_MS);
+    if (networkReady && isUsableDhcpLease()) {
+      runningOnStaticFallback = false;
+      hadDhcpLeaseSinceBoot = true;
+    } else {
+      Serial.println("[ETH] DHCP not available after link recovery, using static fallback");
+      networkReady = applyStaticEthConfig(settings, reasonTag);
+      runningOnStaticFallback = networkReady;
+    }
+  }
+
+  if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+    lastKnownLinkState = ETH.linkUp();
+    networkReady = networkReady && lastKnownLinkState && isValidIP(ETH.localIP());
+    Shared_unlockSPI();
+  } else {
+    lastKnownLinkState = false;
+    networkReady = false;
+  }
+
+  if (networkReady) {
+    linkDownStateLogged = false;
+    invalidIpStateLogged = false;
+    dhcpHoldoverGraceUntilMs = 0;
+    networkDegradedSinceMs = 0;
+    lastDhcpReacquireMs = millis();
+    dhcpReacquireFailCount = 0;
+    invalidIpDhcpFailCount = 0;
+    logRecoveryOutcome(reasonTag);
+  }
+
+  return networkReady;
+}
+
+void TCP_init() {
+  GatewaySettings settings = {};
+  Shared_getGatewaySettings(settings);
+  suppressW5500DisconnectNoise();
+  configuredTcpPort = settings.tcpPort;
+  dhcpConfigured = settings.useDhcp;
+  runningOnStaticFallback = false;
+  networkReady = false;
+  lastKnownLinkState = false;
 
   // Use ESP32 lwIP Ethernet driver for W5500 so Web UI and TCP share one stack.
-  if (!ETH.begin(ETH_PHY_W5500, ETH_W5500_ADDR, ETH_PHY_CS, ETH_PHY_IRQ, ETH_PHY_RST, SPI)) {
-    Serial.println("[ETH] ERROR: ETH.begin failed");
-  } else {
+  if (beginW5500Hardware("startup")) {
     ethInitialized = true;
   }
 
@@ -366,6 +432,7 @@ void TCP_init() {
 
 static void TCP_maintainDHCP() {
   if (!ethInitialized || !dhcpConfigured) return;
+  if (!lastKnownLinkState || !networkReady) return;
   if (!runningOnStaticFallback) {
     staticFallbackAutoPromotionLogged = false;
     return;
@@ -378,11 +445,7 @@ static void TCP_maintainDHCP() {
   // DHCP promotion probes can temporarily drop IP to 0.0.0.0 and disrupt
   // HTTP/Modbus availability even when fallback networking is healthy.
   if (!AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP) {
-    if (!staticFallbackAutoPromotionLogged) {
-      Serial.println("[ETH] DHCP auto-promotion disabled while on static fallback");
-      lastDhcpPromotionDeferredLogMs = now;
-      staticFallbackAutoPromotionLogged = true;
-    }
+    staticFallbackAutoPromotionLogged = true;
     return;
   }
 
@@ -483,49 +546,27 @@ void TCP_monitorEthernetLink() {
   if (linkUp != lastKnownLinkState || (linkUp && !hasValidIP)) {
     if (!linkUp) {
       if (!linkDownStateLogged) {
-        Serial.println("[ETH] WARNING: Ethernet link lost, attempting recovery...");
+        Serial.println("[ETH] WARNING: Ethernet link lost, network service paused until cable reconnect");
         linkDownStateLogged = true;
       }
       invalidIpStateLogged = false;
       lastKnownLinkState = false;
+      networkReady = false;
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       
-      // Reset TCP server/client state so recovery can cleanly rebind.
+      // Reset TCP server/client state and wait for physical link restore.
+      // Do not run DHCP/static recovery while the cable is unplugged; it can
+      // keep the W5500 driver busy in a noisy link-down state.
       resetTcpServerState("link-down");
-      
-      // Attempt to recover the connection
-      GatewaySettings settings = {};
-      if (Shared_getGatewaySettings(settings)) {
-        if (settings.useDhcp) {
-          Serial.println("[ETH] Attempting DHCP recovery...");
-          enableDhcpMode();
-          if (waitForEthIP(DHCP_LINK_RECOVERY_WAIT_MS) && isUsableDhcpLease()) {
-            Serial.println("[ETH] DHCP recovery successful");
-            runningOnStaticFallback = false;
-            networkReady = true;
-            hadDhcpLeaseSinceBoot = true;
-            networkDegradedSinceMs = 0;
-            lastDhcpReacquireMs = now;
-            logRecoveryOutcome("link-lost-dhcp");
-          } else {
-            unsigned long degradedMs = (networkDegradedSinceMs == 0) ? 0 : (now - networkDegradedSinceMs);
-            if (!hadDhcpLeaseSinceBoot || degradedMs >= DHCP_SUSTAINED_OUTAGE_BEFORE_STATIC_MS) {
-              Serial.println("[ETH] DHCP recovery failed for sustained window, switching to static IP");
-              networkReady = applyStaticEthConfig(settings, "link recovery");
-              runningOnStaticFallback = networkReady;
-              if (networkReady) logRecoveryOutcome("link-lost-static-fallback");
-            } else {
-              Serial.println("[ETH] DHCP recovery retry window active, holding DHCP mode");
-              networkReady = false;
-            }
-          }
-        } else {
-          Serial.println("[ETH] Attempting static IP recovery...");
-          networkReady = applyStaticEthConfig(settings, "link recovery");
-          if (networkReady) logRecoveryOutcome("link-lost-static");
-        }
-      }
     } else if (linkUp && !hasValidIP) {
+      if (runningOnStaticFallback) {
+        GatewaySettings settings = {};
+        if (Shared_getGatewaySettings(settings)) {
+          recoverW5500Link(settings, "link-restored-static-fallback", true);
+        }
+        return;
+      }
+
       if (networkDegradedSinceMs == 0) networkDegradedSinceMs = now;
       // Hold Modbus service for a short grace window while DHCP re-acquires.
       // This avoids immediate session drops on brief lease blips.
@@ -607,32 +648,31 @@ void TCP_monitorEthernetLink() {
 
       // If DHCP is configured, explicitly re-request it on link restore.
       // Without this, the stack can remain on a previously applied static IP.
-      if (dhcpConfigured) {
-        if (enableDhcpMode() &&
-            waitForEthIP(DHCP_LINK_RECOVERY_WAIT_MS) &&
-            isUsableDhcpLease()) {
-          runningOnStaticFallback = false;
-          networkReady = true;
-          hadDhcpLeaseSinceBoot = true;
-          networkDegradedSinceMs = 0;
-          lastDhcpReacquireMs = now;
-          dhcpReacquireFailCount = 0;
-          Serial.println("[ETH] DHCP restored after link recovery");
-          logRecoveryOutcome("link-restored-dhcp");
+      if (runningOnStaticFallback && !AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP) {
+        GatewaySettings settings = {};
+        if (Shared_getGatewaySettings(settings)) {
+          recoverW5500Link(settings, "link-restored-static-fallback", true);
         } else {
-          GatewaySettings settings = {};
-          if (Shared_getGatewaySettings(settings)) {
-            networkReady = applyStaticEthConfig(settings, "link restore fallback");
-            runningOnStaticFallback = networkReady;
-            if (networkReady) logRecoveryOutcome("link-restored-static-fallback");
-          } else {
-            networkReady = false;
+          networkReady = false;
+        }
+      } else if (dhcpConfigured) {
+        GatewaySettings settings = {};
+        if (Shared_getGatewaySettings(settings)) {
+          if (recoverW5500Link(settings, "link-restored", false)) {
+            Serial.println(runningOnStaticFallback
+              ? "[ETH] DHCP not available after link recovery, keeping static fallback"
+              : "[ETH] DHCP restored after link recovery");
           }
-          Serial.println("[ETH] DHCP not available after link recovery, keeping static fallback");
+        } else {
+          networkReady = false;
         }
       } else {
-        networkReady = true;
-        networkDegradedSinceMs = 0;
+        GatewaySettings settings = {};
+        if (Shared_getGatewaySettings(settings)) {
+          recoverW5500Link(settings, "link-restored-static", true);
+        } else {
+          networkReady = false;
+        }
       }
 
       if (!Shared_lockSPI(pdMS_TO_TICKS(5))) return;
@@ -652,8 +692,7 @@ static void TCP_processNetwork() {
 
   if (clientActive) {
     if (!activeClient.connected()) {
-      Serial.print("[MODBUS TCP] Client disconnected: remote=");
-      Serial.println(activeClient.remoteIP());
+      Serial.println("[MODBUS TCP] Client disconnected");
       activeClient.stop();
       clientActive = false;
       lastModbusTcpActivityMs = 0;
