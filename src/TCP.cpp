@@ -11,6 +11,9 @@ static ModbusTCPServer modbusTCPServer;
 static WiFiClient      activeClient;
 static bool            clientActive  = false;
 static unsigned long   suppressSyncFromUntilMs = 0;
+static unsigned long   lastModbusTcpActivityMs = 0;
+static unsigned long   lastModbusTcpStatusLogMs = 0;
+static bool            modbusTcpActiveLogged = false;
 
 // W5500 SPI pin map (matches existing wiring in this project)
 static const int ETH_SPI_SCK  = 18;
@@ -53,6 +56,8 @@ static unsigned long lastDhcpPromotionDeferredLogMs = 0;
 static bool staticFallbackAutoPromotionLogged = false;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
+static constexpr unsigned long MODBUS_TCP_STATUS_LOG_MS = 60000;
+static constexpr unsigned long MODBUS_TCP_ACTIVE_WINDOW_MS = 60000;
 static constexpr unsigned long DHCP_PROMOTION_DEFER_LOG_INTERVAL_MS = 30000;
 static constexpr bool AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP = false;
 static bool waitForEthIP(unsigned long timeoutMs);
@@ -61,8 +66,14 @@ static bool acquireDhcpLease(unsigned long timeoutMs);
 
 static void resetTcpServerState(const char *reasonTag) {
   if (clientActive) {
+    Serial.print("[MODBUS TCP] Client disconnected: remote=");
+    Serial.print(activeClient.remoteIP());
+    Serial.print(", reason=");
+    Serial.println(reasonTag);
     activeClient.stop();
     clientActive = false;
+    lastModbusTcpActivityMs = 0;
+    modbusTcpActiveLogged = false;
   }
   if (ethServer != nullptr) {
     ethServer->end();
@@ -113,6 +124,57 @@ static const char *currentEthModeLabel() {
   if (!dhcpConfigured) return "STATIC";
   if (runningOnStaticFallback) return "STATIC_FALLBACK";
   return isDhcpClientStarted() ? "DHCP_ACTIVE" : "DHCP_REQUESTED_NO_CLIENT";
+}
+
+static void logModbusTcpClientConnected(const WiFiClient &client) {
+  Serial.print("[MODBUS TCP] Client connected: remote=");
+  Serial.print(client.remoteIP());
+  Serial.print(", mode=");
+  Serial.print(currentEthModeLabel());
+  Serial.print(", local=");
+  if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+    Serial.print(ETH.localIP());
+    Shared_unlockSPI();
+  } else {
+    Serial.print("unknown");
+  }
+  Serial.print(":");
+  Serial.println(configuredTcpPort);
+  Serial.println("[MODBUS TCP] Status: CONNECTED, activity=WAITING_FOR_REQUESTS");
+}
+
+static void logModbusTcpStatusIfDue() {
+  if (!clientActive) return;
+
+  unsigned long now = millis();
+  if (now - lastModbusTcpStatusLogMs < MODBUS_TCP_STATUS_LOG_MS) return;
+  lastModbusTcpStatusLogMs = now;
+
+  bool recentlyActive = lastModbusTcpActivityMs != 0 &&
+                        (now - lastModbusTcpActivityMs <= MODBUS_TCP_ACTIVE_WINDOW_MS);
+
+  Serial.print("[MODBUS TCP] Status: CONNECTED, activity=");
+  Serial.print(recentlyActive ? "ACTIVE" : "NOT_ACTIVE");
+  Serial.print(", remote=");
+  Serial.print(activeClient.remoteIP());
+  Serial.print(", mode=");
+  Serial.print(currentEthModeLabel());
+  Serial.print(", local=");
+  if (Shared_lockSPI(pdMS_TO_TICKS(5))) {
+    Serial.print(ETH.localIP());
+    Shared_unlockSPI();
+  } else {
+    Serial.print("unknown");
+  }
+  Serial.print(":");
+  Serial.print(configuredTcpPort);
+  if (lastModbusTcpActivityMs != 0) {
+    Serial.print(", last_request_ms_ago=");
+    Serial.print(now - lastModbusTcpActivityMs);
+  } else {
+    Serial.print(", last_request_ms_ago=never");
+  }
+  Serial.println();
 }
 
 static bool isValidIP(const IPAddress &ip) {
@@ -590,10 +652,22 @@ static void TCP_processNetwork() {
 
   if (clientActive) {
     if (!activeClient.connected()) {
+      Serial.print("[MODBUS TCP] Client disconnected: remote=");
+      Serial.println(activeClient.remoteIP());
       activeClient.stop();
       clientActive = false;
+      lastModbusTcpActivityMs = 0;
+      modbusTcpActiveLogged = false;
     } else {
-      modbusTCPServer.poll();
+      int handled = modbusTCPServer.poll();
+      if (handled > 0) {
+        lastModbusTcpActivityMs = millis();
+        if (!modbusTcpActiveLogged) {
+          Serial.println("[MODBUS TCP] Status: ACTIVE (request received and reply sent)");
+          modbusTcpActiveLogged = true;
+        }
+      }
+      logModbusTcpStatusIfDue();
     }
     return;
   }
@@ -608,6 +682,10 @@ static void TCP_processNetwork() {
     Shared_updateTCPLastSeenTriggers();
     suppressSyncFromUntilMs = millis() + 200;
     clientActive = true;
+    lastModbusTcpActivityMs = 0;
+    lastModbusTcpStatusLogMs = 0;
+    modbusTcpActiveLogged = false;
+    logModbusTcpClientConnected(activeClient);
   }
 }
 

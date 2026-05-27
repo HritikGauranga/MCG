@@ -1,11 +1,12 @@
 #include "Shared.h"
 #include <LittleFS.h>
 
-const int BUTTON_PIN   = 33;
-const int AP_STATUS_LED_PIN = 2;
-const int MODEM_RX     = 16;
-const int MODEM_TX     = 17;
-const int MODEM_PWRKEY = 32;
+const int BUTTON_PIN             = 33;
+const int AP_STATUS_LED_PIN      = 4;
+const int MODEM_INIT_STATUS_PIN  = 2;
+const int MODEM_RX               = 16;
+const int MODEM_TX               = 17;
+const int MODEM_PWRKEY           = 32;
 
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 

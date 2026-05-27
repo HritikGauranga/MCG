@@ -72,6 +72,7 @@ struct GatewaySettings {
 
 extern const int BUTTON_PIN;
 extern const int AP_STATUS_LED_PIN;
+extern const int MODEM_INIT_STATUS_PIN;
 extern const int MODEM_RX;
 extern const int MODEM_TX;
 extern const int MODEM_PWRKEY;

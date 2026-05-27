@@ -31,6 +31,12 @@ Latching Switch Connection
 ESP32 GPIO  |  LSwitch  |       Discreption
 GND         | Terminal1 | GND of ESP32 to Termial1 of Latching Switch 
 Pin 33      | Terminal2 | Pin 33 of ESP32 to Terminal2 of Latching Switch
-Pin 02      | Terminal3 | Pin 02 of esp32 to Terminal3 of Latching Switch for LED +ve
-GND         | Terminal4 | Pin 02 of esp32 to Terminal4 of Latching Switch for LED +ve
+Pin 04      | Terminal3 | Pin 04 of ESP32 to Terminal3 of Latching Switch for AP mode LED +ve
+GND         | Terminal4 | GND of ESP32 to Terminal4 of Latching Switch for AP mode LED -ve
+
+Modem Init Status LED
+
+ESP32 GPIO  |  LED      |       Discreption
+Pin 02      | LED +ve   | Pin 02 of ESP32 to modem init success LED +ve
+GND         | LED -ve   | GND of ESP32 to modem init success LED -ve
 

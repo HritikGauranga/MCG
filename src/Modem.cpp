@@ -38,6 +38,10 @@ static void updateModemState(int16_t modemState, int16_t simState, int16_t netwo
   Shared_writeInputRegister(NETWORK_STATUS_REGISTER, networkState);
 }
 
+static void setModemInitStatusLED(bool ready) {
+  digitalWrite(MODEM_INIT_STATUS_PIN, ready ? HIGH : LOW);
+}
+
 // Normalize to a modem-safe destination:
 // - keeps a single leading '+' (E.164)
 // - allows digits only after optional '+'
@@ -222,6 +226,7 @@ static void initModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   delay(500);
 
+  setModemInitStatusLED(false);
   updateModemState((int16_t)STATE_BUSY, (int16_t)STATE_IDLE, (int16_t)STATE_IDLE);
 
   Serial.println("\n=== Initializing 4G Modem (EC200U) ===");
@@ -245,6 +250,7 @@ static void initModem() {
   bool simOk     = modemSimReady();
   bool networkOk = simOk && waitForNetwork();
   modemReady     = simOk && networkOk;
+  setModemInitStatusLED(modemReady);
 
   updateModemState(
     modemReady  ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,
