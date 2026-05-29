@@ -42,6 +42,11 @@ static void setModemInitStatusLED(bool ready) {
   digitalWrite(MODEM_INIT_STATUS_PIN, ready ? HIGH : LOW);
 }
 
+static void setModemReady(bool ready) {
+  modemReady = ready;
+  setModemInitStatusLED(ready);
+}
+
 // Normalize to a modem-safe destination:
 // - keeps a single leading '+' (E.164)
 // - allows digits only after optional '+'
@@ -127,7 +132,7 @@ static bool sendSMS(const String &number, const String &message) {
 
   if (!modemSimReady()) {
     Serial.println("[SMS] SIM not ready - marking modem not ready");
-    modemReady = false;
+    setModemReady(false);
     consecutiveModemHealthFailures = 0;
     return false;
   }
@@ -136,7 +141,7 @@ static bool sendSMS(const String &number, const String &message) {
   bool onNetwork = netRes.indexOf("0,1") != -1 || netRes.indexOf("0,5") != -1;
   if (!onNetwork) {
     Serial.println("[SMS] Network lost - marking modem not ready");
-    modemReady = false;
+    setModemReady(false);
     consecutiveModemHealthFailures = 0;
     Shared_writeInputRegister(NETWORK_STATUS_REGISTER, (int16_t)STATE_ERROR);
     return false;
@@ -164,7 +169,7 @@ static bool sendSMS(const String &number, const String &message) {
     delay(500);
     consecutiveModemHealthFailures++;
     if (consecutiveModemHealthFailures >= 2) {
-      modemReady = false;
+      setModemReady(false);
       Serial.println("[SMS] Prompt missing repeatedly - marking modem not ready");
     } else {
       Serial.println("[SMS] Prompt missing once - keeping modem ready");
@@ -195,7 +200,7 @@ static bool sendSMS(const String &number, const String &message) {
       consecutiveModemHealthFailures++;
       if (consecutiveModemHealthFailures >= 2) {
         Serial.println("[SMS] Modem unresponsive repeatedly - marking not ready");
-        modemReady = false;
+        setModemReady(false);
       } else {
         Serial.println("[SMS] Modem unresponsive once - keeping modem ready for now");
       }
@@ -239,7 +244,7 @@ static void initModem() {
   }
 
   if (res.indexOf("OK") == -1) {
-    modemReady = false;
+    setModemReady(false);
     simMissingLatched = false;
     updateModemState((int16_t)STATE_ERROR, (int16_t)STATE_IDLE, (int16_t)STATE_IDLE);
     Serial.println("[MODEM] No modem response after power ON");
@@ -249,8 +254,7 @@ static void initModem() {
   sendAT("AT+CMEE=2", 2000);
   bool simOk     = modemSimReady();
   bool networkOk = simOk && waitForNetwork();
-  modemReady     = simOk && networkOk;
-  setModemInitStatusLED(modemReady);
+  setModemReady(simOk && networkOk);
 
   updateModemState(
     modemReady  ? (int16_t)STATE_READY : (int16_t)STATE_ERROR,

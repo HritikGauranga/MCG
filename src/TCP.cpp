@@ -6,6 +6,7 @@
 #include <ArduinoModbus.h>
 #include <esp_netif.h>
 #include <esp_log.h>
+#include <new>
 
 static WiFiServer *ethServer = nullptr;
 static ModbusTCPServer modbusTCPServer;
@@ -83,8 +84,10 @@ static void resetTcpServerState(const char *reasonTag) {
   }
   if (ethServer != nullptr) {
     ethServer->end();
+    delete ethServer;
     ethServer = nullptr;
   }
+  modbusTCPServer.end();
   Serial.print("[ETH] TCP server reset: ");
   Serial.println(reasonTag);
 }
@@ -104,11 +107,16 @@ static bool ensureModbusServerStarted() {
   if (ethServer != nullptr) return true;
   if (!networkReady || !lastKnownLinkState) return false;
 
-  static WiFiServer serverInstance(configuredTcpPort);
-  ethServer = &serverInstance;
+  ethServer = new (std::nothrow) WiFiServer(configuredTcpPort);
+  if (ethServer == nullptr) {
+    Serial.println("[ETH] ERROR: Unable to allocate Modbus TCP server");
+    return false;
+  }
   ethServer->begin();
   if (!modbusTCPServer.begin()) {
     Serial.println("[ETH] ERROR: ModbusTCPServer.begin() failed");
+    ethServer->end();
+    delete ethServer;
     ethServer = nullptr;
     return false;
   }
@@ -284,7 +292,7 @@ static bool beginW5500Hardware(const char *reasonTag) {
   delay(250);
 
   SPI.begin(ETH_SPI_SCK, ETH_SPI_MISO, ETH_SPI_MOSI, ETH_PHY_CS);
-  SPI.setFrequency(8000000);
+  SPI.setFrequency(4000000); //set to 4 MHz for better stability with W5500; some modules may not handle higher speeds reliably, make it 4000000 if you experience issues or even 2000000 for very problematic ones
 
   Serial.print("[ETH] Starting Ethernet: ");
   Serial.println(reasonTag);
