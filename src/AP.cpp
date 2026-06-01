@@ -587,8 +587,6 @@ void ensureMBMapConfigFile() {
 }
 
 void printMBMapSummary() {
-  ensureMBMapConfigFile();
-  Shared_loadMessageConfig();
   Serial.printf("[MBMAP] Loaded %u message entries from MBmapconf.csv\n",
                 (unsigned)Shared_getLoadedMessageCount());
 }
@@ -938,8 +936,7 @@ static void setupWebServerRoutes() {
                         ",\"rows\":" + buildConfigTableJSON() + "}";
           request->send(200, "application/json", body);
         } else {
-          String err = Shared_getLastCSVLoadError();
-          if (err.length() == 0) err = "Reload failed";
+          String err = "Reload failed";
           err.replace("\\", "\\\\");
           err.replace("\"", "\\\"");
           request->send(400, "application/json", String("{\"error\":\"") + err + "\"}");

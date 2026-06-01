@@ -22,7 +22,6 @@ enum RegisterStatus : int16_t {
   STATUS_IDLE           =  0,
   STATUS_ERROR_SEND     = -1,
   STATUS_ERROR_SIM      = -2,
-  STATUS_ERROR_NETWORK  = -3,
   STATUS_ERROR_CONFIG   = -4,
   STATUS_ERROR_EMPTY    = -5,
   STATUS_ERROR_MODEM    = -6
@@ -79,13 +78,6 @@ extern const int MODEM_PWRKEY;
 
 extern const unsigned long BUTTON_DEBOUNCE_MS;
 
-extern SemaphoreHandle_t stateMutex;
-extern SemaphoreHandle_t filesystemMutex;
-extern SemaphoreHandle_t spiMutex;  // Protects W5500 SPI access from LittleFS operations
-
-// Utility
-String Shared_trimCopy(const String &value);
-
 // Lifecycle
 void Shared_init();
 
@@ -104,7 +96,6 @@ bool   Shared_getMessageConfig(size_t index, MessageConfig &config);
 String Shared_getTruncatedMessageRowsCSV();
 String Shared_getInvalidPhoneWarningsJSON();
 String Shared_getFaultyMessageRowsCSV();
-String Shared_getLastCSVLoadError();
 size_t Shared_getTruncatedExtraRowCount();
 bool   Shared_loadGatewaySettings();
 bool   Shared_getGatewaySettings(GatewaySettings &settings);

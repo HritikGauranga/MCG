@@ -54,7 +54,6 @@ static uint16_t configuredTcpPort = 502;
 static bool invalidIpStateLogged = false;
 static bool linkDownStateLogged = false;
 static unsigned long lastDhcpPromotionDeferredLogMs = 0;
-static bool staticFallbackAutoPromotionLogged = false;
 static constexpr unsigned long TCP_IDLE_LOOP_MS = 50;
 static constexpr unsigned long TCP_ACTIVE_LOOP_MS = 10;
 static constexpr unsigned long MODBUS_TCP_STATUS_LOG_MS = 60000;
@@ -442,7 +441,6 @@ static void TCP_maintainDHCP() {
   if (!ethInitialized || !dhcpConfigured) return;
   if (!lastKnownLinkState || !networkReady) return;
   if (!runningOnStaticFallback) {
-    staticFallbackAutoPromotionLogged = false;
     return;
   }
   unsigned long now = millis();
@@ -453,7 +451,6 @@ static void TCP_maintainDHCP() {
   // DHCP promotion probes can temporarily drop IP to 0.0.0.0 and disrupt
   // HTTP/Modbus availability even when fallback networking is healthy.
   if (!AUTO_PROMOTE_STATIC_FALLBACK_TO_DHCP) {
-    staticFallbackAutoPromotionLogged = true;
     return;
   }
 
@@ -535,7 +532,7 @@ static void TCP_maintainDHCP() {
 // ---------------------------------------------------------------------------
 // Link health monitoring — detect when W5500 loses connection and recover
 // ---------------------------------------------------------------------------
-void TCP_monitorEthernetLink() {
+static void TCP_monitorEthernetLink() {
   if (!ethInitialized) return;
 
   unsigned long now = millis();

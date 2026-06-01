@@ -1,5 +1,4 @@
 #pragma once
-#include <Arduino.h>
 
 void ensureMBMapConfigFile();
 void printMBMapSummary();

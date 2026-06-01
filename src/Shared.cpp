@@ -10,9 +10,9 @@ const int MODEM_PWRKEY           = 32;
 
 const unsigned long BUTTON_DEBOUNCE_MS = 100;
 
-SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
-SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload. Not needed for read-only access from RTU/TCP tasks since they never touch the filesystem directly.
-SemaphoreHandle_t spiMutex        = nullptr; // Protects W5500 SPI access from LittleFS operations during AP web server file serving.
+static SemaphoreHandle_t stateMutex      = nullptr; // Guards all shared state: registers, message configs, AP mode active, and lastSeen arrays.
+static SemaphoreHandle_t filesystemMutex = nullptr; // Guards LittleFS access for config load and AP file upload. Not needed for read-only access from RTU/TCP tasks since they never touch the filesystem directly.
+static SemaphoreHandle_t spiMutex        = nullptr; // Protects W5500 SPI access from LittleFS operations during AP web server file serving.
 
 static bool     apModeActive = false;
 static uint16_t triggerRegs[MESSAGE_SLOT_COUNT]  = {}; // 
@@ -32,7 +32,6 @@ static uint16_t faultyMessageRows[MESSAGE_SLOT_COUNT] = {};
 static size_t faultyMessageRowCount = 0;
 static InvalidPhoneWarning invalidPhoneWarnings[MAX_INVALID_PHONE_WARNINGS] = {};
 static size_t invalidPhoneWarningCount = 0;
-static String lastCsvLoadError = "";
 static GatewaySettings gatewaySettings = {
   true,            // useDhcp
   {192,168,8,200}, // staticIp
@@ -106,7 +105,7 @@ bool Shared_setTCPLastSeenTrigger(size_t index, uint16_t value) {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
-String Shared_trimCopy(const String &value) {
+static String trimCopy(const String &value) {
   String copy = value;
   copy.trim();
   return copy;
@@ -163,7 +162,7 @@ static bool parseMessageLine(const String &line,
 
   if (found < 6) return false;
 
-  String msgNoStr = Shared_trimCopy(line.substring(0, commas[0]));
+  String msgNoStr = trimCopy(line.substring(0, commas[0]));
   int msgNo = msgNoStr.toInt();
   if (msgNo < 1 || msgNo > (int)MESSAGE_SLOT_COUNT) return false;
 
@@ -174,7 +173,7 @@ static bool parseMessageLine(const String &line,
   for (size_t phoneIndex = 0; phoneIndex < PHONE_SLOTS_PER_MESSAGE; ++phoneIndex) {
     int start = commas[phoneIndex] + 1;
     int end   = commas[phoneIndex + 1];
-    String number = Shared_trimCopy(line.substring(start, end));
+    String number = trimCopy(line.substring(start, end));
     
     if (number.length() == 0) continue;
     
@@ -195,7 +194,7 @@ static bool parseMessageLine(const String &line,
     config.phoneCount++;
   }
 
-  String rawMessage = Shared_trimCopy(line.substring(commas[5] + 1));
+  String rawMessage = trimCopy(line.substring(commas[5] + 1));
   String message = "";
   bool messageFaulty = false;
 
@@ -246,7 +245,6 @@ static void clearMessageConfig() {
   faultyMessageRowCount = 0;
   memset(invalidPhoneWarnings, 0, sizeof(invalidPhoneWarnings));
   invalidPhoneWarningCount = 0;
-  lastCsvLoadError = "";
 }
 
 static bool parseIPv4(const String &src, uint8_t out[4]) {
@@ -343,7 +341,7 @@ bool Shared_loadMessageConfig() {
 
   while (f.available()) {
     csvRowNumber++;
-    String line = Shared_trimCopy(f.readStringUntil('\n'));
+    String line = trimCopy(f.readStringUntil('\n'));
     if (line.length() == 0) continue;
     dataRowCount++;
     if (dataRowCount > MESSAGE_SLOT_COUNT) {
@@ -376,7 +374,6 @@ bool Shared_loadMessageConfig() {
   memset(invalidPhoneWarnings, 0, sizeof(invalidPhoneWarnings));
   memcpy(invalidPhoneWarnings, localInvalidPhoneWarnings, sizeof(localInvalidPhoneWarnings));
   invalidPhoneWarningCount = localInvalidPhoneWarningCount;
-  lastCsvLoadError = "";
   Shared_unlockState();
   return true;
 }
@@ -441,14 +438,6 @@ String Shared_getFaultyMessageRowsCSV() {
   }
   Shared_unlockState();
   return rows;
-}
-
-String Shared_getLastCSVLoadError() {
-  String err = "";
-  if (!Shared_lockState(pdMS_TO_TICKS(100))) return err;
-  err = lastCsvLoadError;
-  Shared_unlockState();
-  return err;
 }
 
 size_t Shared_getTruncatedExtraRowCount() {
@@ -523,12 +512,12 @@ bool Shared_loadGatewaySettings() {
   if (f) {
     found = true;
     while (f.available()) {
-      String line = Shared_trimCopy(f.readStringUntil('\n'));
+      String line = trimCopy(f.readStringUntil('\n'));
       if (line.length() == 0) continue;
       int eq = line.indexOf('=');
       if (eq <= 0) continue;
-      String key = Shared_trimCopy(line.substring(0, eq));
-      String val = Shared_trimCopy(line.substring(eq + 1));
+      String key = trimCopy(line.substring(0, eq));
+      String val = trimCopy(line.substring(eq + 1));
 
       if (key == "use_dhcp") loaded.useDhcp = (val == "1");
       else if (key == "static_ip") parseIPv4(val, loaded.staticIp);
