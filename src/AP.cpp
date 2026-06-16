@@ -355,7 +355,7 @@ static String serialNumberPage(const String &currentSerial, const String &messag
     formBlock = R"rawliteral(
       <form method="POST" action="/serialnumber/">
         <label for="serial">Serial Number</label>
-        <input id="serial" name="serial" type="text" placeholder="e.g. MCG001" required maxlength="32" pattern="[A-Za-z0-9_-]+">
+        <input id="serial" name="serial" type="text" placeholder="e.g. OMS0001" required maxlength="32" pattern="[A-Za-z0-9_-]+">
         <button type="submit">Set Serial Number</button>
       </form>
     )rawliteral";
